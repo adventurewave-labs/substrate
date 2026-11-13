@@ -10,12 +10,13 @@
 |---|---|
 | [PRD — v0.2 (2026-11-12)](docs/PRD-living-gtm-graph-2026-11-12.md) | Master product requirements: thesis, market evidence, wedge (Champion Graph), ER architecture, competitive landscape, pricing, metrics, decisions |
 | [PLAN — M0–M2 execution (2026-11-12)](docs/PLAN-substrate-m0-m2-execution-2026-11-12.md) | 9-week build spec for the Resolve layer: scope lock, topology, DDL intent, ER engine, sources, week-by-week gates, burn |
+| [KIT — design-partner outreach (2026-11-12)](docs/KIT-substrate-partner-outreach-2026-11-12.md) | ICP, target-list construction, outreach sequences with copy, Audit landing copy, partner term sheet, onboarding + M0 kickoff checklists |
 
 ## Status
 
 - **M0 kickoff:** 2026-12-01 · gates land ~Feb / May / Sep / Dec 2027 (calendar slips before gates do)
 - **Current gate:** M2 — resolution ≥80% on 3 design-partner CRMs, merge precision ≥99.5%, zero privacy incidents
-- **Next artifact:** design-partner outreach kit (W1 dependency)
+- **Next artifact:** ~~design-partner outreach kit~~ shipped · next: code (M0–M2 build per PLAN §7), pitch deck deferred to M2 evidence
 
 ## Working agreements
 
