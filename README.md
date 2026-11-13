@@ -2,7 +2,7 @@
 
 **The living knowledge graph for go-to-market.** Salesforce is the system of record. Clay is the system of action. Substrate is the system of truth — every company, person, job, and relationship edge, resolved with provenance and streamed as it changes.
 
-> Private venture repo — planning documents. Code lands in its own repos per the architecture spec.
+> Venture monorepo: planning docs + core services. Postgres-only topology per PLAN §2 — no graph DB in v1.
 
 ## Documents
 
@@ -17,6 +17,16 @@
 - **M0 kickoff:** 2026-12-01 · gates land ~Feb / May / Sep / Dec 2027 (calendar slips before gates do)
 - **Current gate:** M2 — resolution ≥80% on 3 design-partner CRMs, merge precision ≥99.5%, zero privacy incidents
 - **Next artifact:** ~~design-partner outreach kit~~ shipped · next: code (M0–M2 build per PLAN §7), pitch deck deferred to M2 evidence
+
+## Dev setup
+
+```bash
+python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"
+.venv/bin/ruff check src tests && .venv/bin/mypy src && .venv/bin/pytest -q
+.venv/bin/substrate import-csv --tenant demo --contacts-file export.csv --report report.json --dry-run
+```
+
+Layout: `src/substrate/` core services (config · db + migration runner · reconciliation · importers · store) · `db/migrations/` numbered SQL · `terraform/` infra (applied from the remote plane only) · `docs/` PRD / PLAN / KIT.
 
 ## Working agreements
 
