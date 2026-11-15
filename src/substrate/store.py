@@ -99,6 +99,8 @@ def supersede_claim(
     source_type: str,
     source_id: str,
     confidence: float = 1.0,
+    url: str | None = None,
+    retrieved_at: datetime | None = None,
 ) -> bool:
     """Insert the current claim for a field, superseding the prior one iff changed.
 
@@ -113,11 +115,11 @@ def supersede_claim(
     ).fetchone()
     if current and current[1] == value:
         return False
-    now = datetime.now(UTC)
+    now = retrieved_at or datetime.now(UTC)
     new_id = conn.execute(
         "INSERT INTO claims (tenant_id, entity_type, entity_id, field, value_norm, "
-        "source_type, source_id, retrieved_at, extractor_version, confidence) "
-        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id",
+        "source_type, source_id, url, retrieved_at, extractor_version, confidence) "
+        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id",
         (
             tenant_id,
             entity_type,
@@ -126,6 +128,7 @@ def supersede_claim(
             value,
             source_type,
             source_id,
+            url,
             now,
             EXTRACTOR_VERSION,
             confidence,

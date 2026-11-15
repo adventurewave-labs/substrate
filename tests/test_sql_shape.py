@@ -46,3 +46,40 @@ def test_person_load_sql_scopes_bitemporal_axes():
 def test_person_load_sql_deterministic_employer_pick():
     # Gate finding: LATERAL ... LIMIT 1 without ORDER BY is nondeterministic.
     assert re.search(r"ORDER BY\s+pos\.txn_from DESC\s+LIMIT 1", PERSON_LOAD_SQL)
+
+
+def _migration_tables(sql: str) -> dict[str, set[str]]:
+    """CREATE TABLE blocks → {table: {column, ...}}."""
+    tables: dict[str, set[str]] = {}
+    for match in re.findall(r"CREATE TABLE (\w+) \((.*?)\n\);", sql, flags=re.S):
+        name, body = match
+        cols: set[str] = set()
+        for line in body.splitlines():
+            line = line.strip().rstrip(",")
+            skips = ("--", "CONSTRAINT", "EXCLUDE", "PRIMARY", "UNIQUE", "CHECK")
+            if not line or line.startswith(skips):
+                continue
+            token = line.split()[0] if line.split() else ""
+            if token:
+                cols.add(token)
+        tables[name] = cols
+    return tables
+
+
+def test_migration_indexes_only_reference_declared_columns():
+    # Gate round-1 finding: 004 indexed funding_events.announced_at, a column that
+    # does not exist — the whole migration aborted. This checker pins the class.
+    from substrate.db import MIGRATIONS_DIR
+
+    for path in sorted(MIGRATIONS_DIR.glob("*.sql")):
+        sql = path.read_text()
+        tables = _migration_tables(sql)
+        for match in re.findall(r"CREATE INDEX \w+ ON (\w+) \(([^)]+)\)", sql):
+            table, col_list = match
+            if table not in tables:
+                continue  # index on a table defined in an earlier migration
+            for column in col_list.split(","):
+                column = column.strip().split()[0]
+                assert column in tables[table], (
+                    f"{path.name}: index column {table}.{column} is not declared"
+                )

@@ -1,0 +1,9 @@
+{
+  "website": "acme.com",
+  "company_name": "Acme Corp",
+  "employees_count": 184,
+  "hq_country": "United States",
+  "hq_city": "New York",
+  "industry": "Software Development",
+  "description": "Acme Corp builds go-to-market identity infrastructure for B2B revenue teams."
+}

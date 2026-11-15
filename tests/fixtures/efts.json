@@ -1,0 +1,35 @@
+{
+  "hits": {
+    "total": {"value": 5},
+    "hits": [
+      {
+        "_index": "efts-fulltext-search-2026",
+        "_source": {
+          "file_type": "D",
+          "company_name": "Acme Corp, Inc.",
+          "ciks": ["0001234567"],
+          "file_date": "2026-11-01",
+          "adsh": "0001234-26-011001"
+        }
+      },
+      {
+        "_source": {
+          "file_type": "D",
+          "company_name": "Beta Industries LLC",
+          "ciks": ["0007654321"],
+          "file_date": "2026-11-02",
+          "adsh": "0001234-26-011002"
+        }
+      },
+      {
+        "_source": {
+          "file_type": "8-K",
+          "company_name": "Should Not Appear",
+          "ciks": ["0009999999"],
+          "file_date": "not-a-date",
+          "adsh": "0001234-26-011003"
+        }
+      }
+    ]
+  }
+}
