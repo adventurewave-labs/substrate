@@ -75,7 +75,7 @@ def cmd_er_v0(args: argparse.Namespace) -> int:
     conn = _connect(args)
     try:
         tenant_id = tenant_id_by_name(conn, args.tenant)
-        stats = run_er_v0(conn, tenant_id, dry_run=args.dry_run)
+        stats = run_er_v0(conn, tenant_id, dry_run=args.dry_run, force=args.force)
     finally:
         conn.close()
     print(stats_json(stats))
@@ -114,14 +114,20 @@ def cmd_golden_eval(args: argparse.Namespace) -> int:
 def cmd_audit(args: argparse.Namespace) -> int:
     from substrate.er.engine import run_audit
 
+    if not args.out.endswith(".json"):
+        # The HTML lands alongside; a non-.json --out would silently overwrite the
+        # JSON with it (gate finding). Fail loudly instead.
+        raise SystemExit("--out must end with .json (the .html report is written alongside)")
+    html_path = args.out[:-5] + ".html"
+
     conn = _connect(args)
     try:
         report, page = run_audit(conn, args.tenant)
     finally:
         conn.close()
     Path(args.out).write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
-    Path(args.out.removesuffix(".json") + ".html").write_text(page)
-    print(f"audit -> {args.out} (+ .html)")
+    Path(html_path).write_text(page)
+    print(f"audit -> {args.out} (+ {html_path})")
     return 0
 
 
@@ -150,6 +156,11 @@ def main(argv: list[str] | None = None) -> int:
     p_er = sub.add_parser("er-v0", help="deterministic entity resolution for a tenant")
     with_db(p_er)
     p_er.add_argument("--dry-run", action="store_true", help="score candidates, write nothing")
+    p_er.add_argument(
+        "--force",
+        action="store_true",
+        help="replace this featureset's auto_merge decisions (new imports get resolved)",
+    )
     p_er.set_defaults(func=cmd_er_v0)
 
     p_sample = sub.add_parser("golden-sample", help="write golden-set labeling worksheet")

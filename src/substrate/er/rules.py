@@ -65,7 +65,10 @@ def decide(left: PersonRecord, right: PersonRecord) -> Outcome | None:
     le, re_ = _emails(left), _emails(right)
     shared_emails = le & re_
 
-    # R1 — exact shared email + same family name: near-conclusive.
+    # R1 — exact shared email + same family name: near-conclusive. Known precision
+    # risk (gate review): same-name colleagues sharing a role inbox auto-merge.
+    # Design choice for v0 — the golden-set harness tripwire
+    # (test_evaluate_catches_false_auto_merge) measures exactly this failure mode.
     if shared_emails:
         lf, rf = _full_name(left)[1], _full_name(right)[1]
         if lf is not None and lf == rf:

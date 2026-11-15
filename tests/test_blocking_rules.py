@@ -3,7 +3,11 @@ from substrate.er.rules import Decision, decide
 
 
 def _p(pid, *, emails=(), given=None, family=None, employer=None):
-    domain = emails[0].split("@", 1)[1] if emails else None
+    domain = None
+    for email in emails:
+        if isinstance(email, str) and "@" in email:
+            domain = email.split("@", 1)[1]
+            break
     return PersonRecord(
         person_id=pid,
         emails=list(emails),
@@ -36,6 +40,23 @@ def test_candidate_pairs_order_independent():
 def test_slugify_deterministic():
     assert slugify("Acme Corp!") == slugify("acme corp") == "acme-corp"
     assert slugify("Ünïcode AG") == "unicode-ag"
+
+
+def test_empty_emails_never_fuse_a_bucket():
+    # Gate finding: "" emails would put every such person into one em: bucket.
+    a = _p("a", emails=("",), family="Wu")
+    b = _p("b", emails=("   ",), family="Wu")
+    c = _p("c", emails=("",), family="Wu")
+    assert candidate_pairs([a, b, c]) == set()
+
+
+def test_first_email_skips_nulls_and_blanks():
+    from substrate.er.blocking import first_email
+
+    assert first_email([None, "", " A@B.com "]) == "a@b.com"
+    assert first_email([None]) is None
+    assert first_email([]) is None
+    assert first_email(None) is None
 
 
 # ---- rules ----

@@ -43,6 +43,92 @@ def test_sample_is_deterministic_and_capped():
     assert kinds <= {"exact_email", "fuzzy_same_org", "fuzzy_diff_org", "hard_negative", "random"}
 
 
+_OVERLAP_SCRIPT = """
+import json, sys
+from substrate.er.blocking import PersonRecord
+from substrate.eval.golden import sample_pairs, write_worksheet
+
+raw = json.load(open(sys.argv[1]))
+persons = [
+    PersonRecord(
+        person_id=p["person_id"], emails=p["emails"], name_given=p["name_given"],
+        name_family=p["name_family"], employer_slug=p["employer_slug"],
+        email_domain=p["email_domain"], has_title=False,
+    )
+    for p in raw
+]
+print(write_worksheet(sample_pairs(persons)), end="")
+"""
+
+
+def test_sample_determinism_survives_hash_randomization(tmp_path):
+    # Gate finding: blocking_keys() returns sets — per-process string-hash
+    # randomization changes iteration order, so first-arrival stratum assignment
+    # differs across processes. Classification must be priority-based; this test
+    # proves it with two different PYTHONHASHSEED values.
+    import json
+    import os
+    import subprocess
+    import sys
+
+    raw_rows = [
+        ("p1", ["a@acme.com"], "Ann", "Lee", "acme", "acme.com"),
+        ("p2", ["A@ACME.com"], "Anne", "Lee", "acme", "acme.com"),
+        ("p3", ["bob@beta.com"], "Bob", "Wu", "beta", "beta.com"),
+        ("p4", ["bo@beta.com"], "Bo", "Wu", "gamma", "beta.com"),
+        ("p5", ["cy@gamma.com"], "Cy", "Ray", None, "gamma.com"),
+        ("p6", ["craig@gamma.com"], "Craig", "Ray", None, "gamma.com"),
+    ]
+    population = [
+        {
+            "person_id": pid, "emails": emails, "name_given": given,
+            "name_family": family, "employer_slug": slug, "email_domain": domain,
+        }
+        for pid, emails, given, family, slug, domain in raw_rows
+    ]
+    fixture = tmp_path / "population.json"
+    fixture.write_text(json.dumps(population))
+
+    outputs = []
+    for seed in ("1", "99"):
+        env = {**os.environ, "PYTHONHASHSEED": seed}
+        proc = subprocess.run(
+            [sys.executable, "-c", _OVERLAP_SCRIPT, str(fixture)],
+            capture_output=True, text=True, env=env, check=True,
+        )
+        outputs.append(proc.stdout)
+    assert outputs[0] == outputs[1]
+
+    # The overlap case is classified by priority, not arrival order: p1/p2 share
+    # em + nm + no keys — always exact_email.
+    from substrate.eval.golden import read_worksheet
+
+    pairs = {p.left_id + p.right_id: p.pair_kind for p in read_worksheet(outputs[0])}
+    assert pairs["p1p2"] == "exact_email"
+
+
+def test_evaluate_headline_recall_is_block_independent():
+    # exact_email 'same' pairs share a block by construction; only random/
+    # hard_negative labels can move the gated metric.
+    persons = _population()
+    pairs = [
+        GoldenPair("exact_email", "1", "2", "same"),
+        GoldenPair("random", "3", "5", "same"),  # no shared block
+    ]
+    report = evaluate(pairs, persons, decide)
+    assert report.blocking_recall == 0.0  # honest: the random same-pair is missed
+    assert report.blocking_recall_block_independent_pairs == 1
+    assert report.blocking_recall_all_labeled == 0.5  # 1/2 across all strata
+
+
+def test_evaluate_no_independent_labels_recall_is_none():
+    persons = _population()
+    pairs = [GoldenPair("exact_email", "1", "2", "same")]
+    report = evaluate(pairs, persons, decide)
+    assert report.blocking_recall is None
+    assert report.blocking_recall_all_labeled == 1.0
+
+
 def test_sample_caps_match_plan_contract():
     # PLAN §4: 500 pairs, hard negatives are 40% of the sample.
     caps = DEFAULT_STRATUM_CAPS
@@ -82,7 +168,10 @@ def test_evaluate_blocks_misses_and_precision():
     report: EvalReport = evaluate(pairs, persons, decide)
     assert report.labeled_pairs == 3
     assert report.same_pairs == 1
-    assert report.blocking_recall == 1.0  # 1/2 share the em: block
+    # No block-independent labels yet: the gated metric is None, not a fake 1.0.
+    assert report.blocking_recall is None
+    assert report.blocking_recall_block_independent_pairs == 0
+    assert report.blocking_recall_all_labeled == 1.0
     assert report.auto_merge_precision == 1.0  # the auto_merge lands on the 'same' pair
     assert report.decision_counts.get("auto_merge") == 1
 

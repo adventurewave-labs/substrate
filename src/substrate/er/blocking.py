@@ -11,6 +11,7 @@ from __future__ import annotations
 import re
 import unicodedata
 from dataclasses import dataclass, field
+from typing import Any
 
 from substrate.er.phonetics import soundex
 
@@ -63,10 +64,24 @@ def normalize_name_part(part: str | None) -> str | None:
     return s or None
 
 
+def first_email(emails: list[str] | tuple[Any, ...] | None) -> str | None:
+    """First usable email — Postgres text[] can carry NULLs and empty strings."""
+    for email in emails or ():
+        if isinstance(email, str) and email.strip():
+            return normalize_email(email)
+    return None
+
+
 def blocking_keys(person: PersonRecord) -> set[str]:
-    """The key sets a pair must share to become ER candidates. Deterministic."""
+    """The key sets a pair must share to become ER candidates. Deterministic.
+
+    Iteration order of the returned set is per-process randomized — consumers must
+    never depend on it (stratum classification reads the full shared-key set, not
+    first-arrival order)."""
     keys: set[str] = set()
     for email in person.emails:
+        if not isinstance(email, str) or not email.strip():
+            continue  # empty strings would fuse strangers into one em: bucket
         keys.add(f"em:{normalize_email(email)}")
     family = normalize_name_part(person.name_family)
     given = normalize_name_part(person.name_given)
