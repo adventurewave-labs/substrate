@@ -7,13 +7,18 @@ from substrate.er.blocking import PersonRecord, slugify
 
 
 def _p(pid, *, emails=(), given=None, family=None, employer=None, has_title=False):
+    domain = None
+    for email in emails:
+        if isinstance(email, str) and "@" in email:
+            domain = email.split("@", 1)[1]
+            break
     return PersonRecord(
         person_id=pid,
         emails=list(emails),
         name_given=given,
         name_family=family,
         employer_slug=slugify(employer) if employer else None,
-        email_domain=emails[0].split("@", 1)[1] if emails else None,
+        email_domain=domain,
         has_title=has_title,
     )
 
@@ -39,6 +44,19 @@ def test_report_math_with_clusters():
 def test_report_empty_tenant_is_an_error():
     with pytest.raises(ValueError, match="empty tenant"):
         build_report("ghost", [], {})
+
+
+def test_blank_emails_are_not_contactable():
+    # Gate round-4: whitespace-only emails must not inflate contactability or
+    # shared_email_collisions.
+    persons = [
+        _p("1", emails=("   ",), family="Lee", employer="Acme"),
+        _p("2", emails=("  ",), family="Wu", employer="Acme"),
+        _p("3", emails=("a@x.com",), family="Ray", employer="Acme"),
+    ]
+    report = build_report("acme", persons, {"1": "1", "2": "2", "3": "3"})
+    assert report.contactable_rate == round(1 / 3, 4)
+    assert report.shared_email_collisions == 0
 
 
 def test_report_marks_unmeasurable_honestly():

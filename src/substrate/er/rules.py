@@ -13,7 +13,12 @@ import re
 from dataclasses import dataclass
 from enum import StrEnum
 
-from substrate.er.blocking import PersonRecord, normalize_email, normalize_name_part
+from substrate.er.blocking import (
+    FREE_EMAIL_DOMAINS,
+    PersonRecord,
+    normalize_email,
+    normalize_name_part,
+)
 
 FEATURESET_VERSION = "er-v0.0-deterministic"
 
@@ -31,8 +36,15 @@ class Outcome:
     rule: str
 
 
-def _emails(person: PersonRecord) -> set[str]:
-    return {normalize_email(e) for e in person.emails if e}
+def _usable_emails(person: PersonRecord) -> set[str]:
+    """Normalized, actually-usable emails. Whitespace-only strings are NOT usable —
+    they normalize to "" and two blank-email persons would otherwise 'share' an
+    address and R1-merge with zero evidence (gate round-4 finding)."""
+    return {
+        normalize_email(e)
+        for e in person.emails
+        if isinstance(e, str) and e.strip()
+    }
 
 
 def _full_name(person: PersonRecord) -> tuple[str | None, str | None]:
@@ -46,7 +58,7 @@ def _email_local(email: str) -> str:
 def _canonical_address(person: PersonRecord) -> tuple[str | None, str | None]:
     """(domain, local) of one deterministic email — domain and local always come
     from the same address, never mixed across a person's emails."""
-    emails = sorted(_emails(person))
+    emails = sorted(_usable_emails(person))
     if not emails:
         return None, None
     local, _, domain = emails[0].partition("@")
@@ -62,7 +74,7 @@ def decide(left: PersonRecord, right: PersonRecord) -> Outcome | None:
     Order matters: the first matching rule wins, rules are ordered most-specific
     first. Precision targets come from PLAN §4 bands (≥0.995 auto-merge).
     """
-    le, re_ = _emails(left), _emails(right)
+    le, re_ = _usable_emails(left), _usable_emails(right)
     shared_emails = le & re_
 
     # R1 — exact shared email + same family name: near-conclusive. Known precision
@@ -71,7 +83,12 @@ def decide(left: PersonRecord, right: PersonRecord) -> Outcome | None:
     # (test_evaluate_catches_false_auto_merge) measures exactly this failure mode.
     if shared_emails:
         lf, rf = _full_name(left)[1], _full_name(right)[1]
+        lg, rg = _full_name(left)[0], _full_name(right)[0]
         if lf is not None and lf == rf:
+            # Cheap precision guard: conflicting given initials on a shared address
+            # smells like a role inbox, not one person (Pat vs Chris Lee on info@).
+            if lg is not None and rg is not None and lg[0] != rg[0]:
+                return Outcome(Decision.REVIEW, 0.970, "R1_exact_email_initial_conflict")
             return Outcome(Decision.AUTO_MERGE, 0.999, "R1_exact_email_same_family")
 
         # R2 — exact shared email, names differ or unknown: shared inboxes and
@@ -80,10 +97,17 @@ def decide(left: PersonRecord, right: PersonRecord) -> Outcome | None:
 
     # R3 — same person-shaped local parts on the same corporate domain, same
     # family name: e.g. j.smith@ and smithj@. Two distinct people do share
-    # domains — review, never auto.
+    # domains — review, never auto. Free-mail domains carry no employer signal.
     ldom, lloc = _canonical_address(left)
     rdom, rloc = _canonical_address(right)
-    if ldom is not None and ldom == rdom and lloc and rloc and lloc != rloc:
+    if (
+        ldom is not None
+        and ldom == rdom
+        and ldom not in FREE_EMAIL_DOMAINS
+        and lloc
+        and rloc
+        and lloc != rloc
+    ):
         lf, rf = _full_name(left)[1], _full_name(right)[1]
         if lf is not None and lf == rf and _ALNUM_LOCAL.match(lloc) and _ALNUM_LOCAL.match(rloc):
             # initials-vs-fullname shapes from BOTH given initials, so the rule is

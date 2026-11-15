@@ -48,6 +48,7 @@ LEFT JOIN LATERAL (
     JOIN organizations o ON o.id = pos.org_id
     WHERE pos.person_id = p.id
       AND pos.tenant_id = %s
+      AND o.tenant_id = %s
       AND pos.txn_to IS NULL
       AND (pos.valid_end IS NULL OR pos.valid_end >= CURRENT_DATE)
     ORDER BY pos.txn_from DESC
@@ -74,7 +75,7 @@ def load_person_records(
     the reviewer caught exactly that). Identity anchoring lives in external_ids;
     this query reads persons only.
     """
-    rows = conn.execute(PERSON_LOAD_SQL, (tenant_id, tenant_id)).fetchall()
+    rows = conn.execute(PERSON_LOAD_SQL, (tenant_id, tenant_id, tenant_id)).fetchall()
 
     persons: list[PersonRecord] = []
     for pid, emails, given, family, org_name, title_norm in rows:
@@ -113,9 +114,13 @@ def run_er_v0(
     """Score a tenant's persons and persist decisions.
 
     Rerun semantics: ER v0 is a pure function of persons, so ``force`` replaces this
-    featureset's auto_merge decisions (persons imported after the first run get
-    resolved). Review-queue rows are append-only — a pair already queued (any
-    status) is never re-queued, so human dispositions survive reruns.
+    featureset's decision rows (persons imported after the first run get resolved).
+    That trades decision-row history for correctness — acceptable because
+    merge_decisions is recomputable output (persons + FEATURESET_VERSION → same
+    rows, byte-identical), not evidence; the evidence trail lives in claims,
+    review-queue dispositions, and the audit reports' generated_at stamps.
+    Review-queue rows are append-only — a pair already queued (any status) is never
+    re-queued, so human dispositions survive reruns.
     """
     persons, _ = load_person_records(conn, tenant_id)
     by_id = {p.person_id: p for p in persons}
@@ -135,9 +140,12 @@ def run_er_v0(
                 "review-queue dispositions are preserved)"
             )
         if existing is not None and force:
+            # Replace ALL rows for this featureset — review dispositions live in
+            # review_queue, not here; merge_decisions is pure computed output, so
+            # partial deletion would duplicate REVIEW rows on the reinsert.
             conn.execute(
                 "DELETE FROM merge_decisions WHERE tenant_id = %s "
-                "AND featureset_version = %s AND decision = 'auto_merge'",
+                "AND featureset_version = %s",
                 (tenant_id, FEATURESET_VERSION),
             )
 
@@ -147,6 +155,15 @@ def run_er_v0(
             continue
         if outcome.decision == Decision.AUTO_MERGE:
             auto += 1
+            if not dry_run:
+                # A pair now auto-merged must not linger as a pending human review
+                # (possible after --force reclassifies a REVIEW pair).
+                conn.execute(
+                    "UPDATE review_queue SET status = 'merged', decided_by = 'er-v0', "
+                    "decided_at = now() WHERE tenant_id = %s AND left_person_id = %s::uuid "
+                    "AND right_person_id = %s::uuid AND status = 'pending'",
+                    (tenant_id, left_id, right_id),
+                )
         elif outcome.decision == Decision.REVIEW:
             review += 1
         if dry_run:
@@ -175,7 +192,9 @@ def run_er_v0(
                 conn.execute(
                     "INSERT INTO review_queue "
                     "(tenant_id, left_person_id, right_person_id, score, rule, featureset_version) "
-                    "VALUES (%s, %s::uuid, %s::uuid, %s, %s, %s)",
+                    "VALUES (%s, %s::uuid, %s::uuid, %s, %s, %s) "
+                    "ON CONFLICT (tenant_id, left_person_id, right_person_id) "
+                    "WHERE status = 'pending' DO NOTHING",
                     (
                         tenant_id,
                         left_id,

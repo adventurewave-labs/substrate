@@ -1,5 +1,7 @@
 import json
 
+import pytest
+
 from substrate.cli import main
 
 CSV = """Contact ID,First Name,Last Name,Email,Title,Account Name
@@ -59,3 +61,10 @@ def test_import_csv_dry_run_with_bad_rows(tmp_path):
     assert payload["reconciliation"]["rows_skipped"] == 1
     assert payload["reconciliation"]["rows_parsed"] == 0
     assert payload["reconciliation"]["field_population"].get("email", 0.0) == 0.0
+
+
+def test_audit_rejects_non_json_out_before_touching_a_database(monkeypatch):
+    # Guard fires before any connect: garbage DATABASE_URL proves it.
+    monkeypatch.setenv("SUBSTRATE_DATABASE_URL", "postgresql://no:such@localhost:1/none")
+    with pytest.raises(SystemExit, match="must end with .json"):
+        main(["audit", "--tenant", "x", "--out", "report.html"])

@@ -5,10 +5,15 @@ fuzzy diff-org / hard negatives (40% of the sample) — hand-labeled in a worksh
 then measured: merge precision (decisions vs labels) and blocking recall (labeled
 'same' pairs that never share a block are silent misses; ≥99% or the keys change).
 
-Honest-measurement note (gate review, PR #4): block-derived strata cannot reveal a
+Honest-measurement note (gate reviews, PR #4): block-derived strata cannot reveal a
 missed block by construction — a pair that shares a key was found *through* that
-key. The ``random`` stratum samples pairs irrespective of blocks; only labels in
-that stratum (plus hard negatives) can exercise blocking recall truthfully.
+key. That includes hard negatives: they are grouped by (soundex(family), initial),
+which is exactly the ``nf:`` block key, so a hard-negative pair is block-found too.
+ONLY the ``random`` stratum is block-independent, and ONLY random-stratum labels
+exercise blocking recall truthfully. Honest caveat: a random pair is a same-person
+pair with probability ≈ duplicate_rate/N, so the gated metric stays ``None`` on
+most real worksheets until a fully-labeled pass exists (the M2 gate evidence
+comes from labeling a full audit sample, not from this worksheet alone).
 
 Sampling is deterministic (no RNG; sorted keys + evenly spaced strides) so a
 worksheet can be regenerated and stay stable. Pure logic — DB adapter in engine.py.
@@ -22,7 +27,7 @@ from collections import Counter
 from dataclasses import dataclass
 from typing import Any
 
-from substrate.er.blocking import PersonRecord, blocking_keys
+from substrate.er.blocking import PersonRecord, blocking_keys, normalize_name_part
 from substrate.er.phonetics import soundex
 from substrate.er.rules import Decision, Outcome
 
@@ -109,7 +114,7 @@ def sample_pairs(
 
     pair_keys: dict[tuple[str, str], set[str]] = {}
     for key in sorted(index):
-        members = index[key]
+        members = sorted(index[key])  # sorted: bucket order must not depend on person order
         if len(members) < 2 or key.startswith(("dom:", "nf:")):
             continue  # dom/nf keys are rule/negative-sampling concerns, not strata
         if len(members) > _MAX_BUCKET:
@@ -129,23 +134,28 @@ def sample_pairs(
             strata[kind].append(pair)
 
     # Hard negatives: same phonetic family + same given initial, nothing else shared.
+    # Capped like block buckets, set-deduped, normalized initials — same determinism
+    # and blow-up rules as the block strata above.
     by_phonetic: dict[tuple[str, str], list[PersonRecord]] = {}
     for person in persons:
         family = person.name_family
         if family:
-            neg_key = (
-                soundex(family),
-                person.name_given[:1].lower() if person.name_given else "",
-            )
+            given_norm = normalize_name_part(person.name_given)
+            neg_key = (soundex(family), given_norm[:1] if given_norm else "")
             by_phonetic.setdefault(neg_key, []).append(person)
+    hard_seen: set[tuple[str, str]] = set()
     for neg_key in sorted(by_phonetic):
         group = sorted(by_phonetic[neg_key], key=lambda p: p.person_id)
+        if len(group) > _MAX_BUCKET:
+            step = len(group) / _MAX_BUCKET
+            group = [group[int(i * step)] for i in range(_MAX_BUCKET)]
         for i, left_p in enumerate(group):
             for right_p in group[i + 1 :]:
                 shared = blocking_keys(left_p) & blocking_keys(right_p)
                 if not shared or all(k.startswith("nf:") for k in shared):
                     pair = (left_p.person_id, right_p.person_id)
-                    if pair not in strata["hard_negative"]:
+                    if pair not in hard_seen:
+                        hard_seen.add(pair)
                         strata["hard_negative"].append(pair)
 
     # Random stratum: fixed-stride pairs over sorted ids, independent of blocks —
@@ -198,7 +208,7 @@ def read_worksheet(text: str) -> list[GoldenPair]:
 class EvalReport:
     labeled_pairs: int
     same_pairs: int
-    blocking_recall: float | None  # block-independent strata only (random + hard_negative)
+    blocking_recall: float | None  # random stratum ONLY — the one block-independent stratum
     blocking_recall_block_independent_pairs: int
     # every labeled 'same' pair — near-1.0 by construction, reported for transparency
     blocking_recall_all_labeled: float | None
@@ -214,7 +224,7 @@ class EvalReport:
             "labeled_pairs": self.labeled_pairs,
             "same_pairs": self.same_pairs,
             "blocking_recall": self.blocking_recall,
-            "blocking_recall_scope": "random+hard_negative strata only (block-independent)",
+            "blocking_recall_scope": "random stratum only (the sole block-independent stratum)",
             "blocking_recall_block_independent_pairs": (
                 self.blocking_recall_block_independent_pairs
             ),
@@ -239,15 +249,15 @@ def evaluate(
     v0 rules today and the v1 scorer at W7–8 without rewrite.
 
     ``blocking_recall`` (the gated metric, ≥99% or the keys change) is computed over
-    the block-independent strata ONLY (random + hard_negative): block-derived strata
-    share a block by construction, so including them would pin the number near 1.0
-    no matter how good the keys are. The all-labeled number is reported separately
-    for transparency.
+    the random stratum ONLY. Block-derived strata — including hard negatives, which
+    share the ``nf:`` block by construction — cannot reveal a missed block, so they
+    stay out of the gated number. The all-labeled figure is reported separately for
+    transparency.
     """
     by_id = {p.person_id: p for p in persons}
     labeled = [p for p in pairs if p.label is not None]
     same = [p for p in labeled if p.label == "same"]
-    independent = [p for p in same if p.pair_kind in ("random", "hard_negative")]
+    independent = [p for p in same if p.pair_kind == "random"]
 
     def _missed(pair_list: list[GoldenPair]) -> list[tuple[str, str]]:
         missed: list[tuple[str, str]] = []
@@ -257,12 +267,12 @@ def evaluate(
                 missed.append((pair.left_id, pair.right_id))
         return missed
 
-    missed_blocks = _missed(independent)
-    missed_all = _missed(same)
+    missed_blocks = _missed(same)  # all known silent misses, any stratum (operator report)
+    missed_independent = _missed(independent)  # drives the gated metric
     blocking_recall = (
-        round(1 - len(missed_blocks) / len(independent), 4) if independent else None
+        round(1 - len(missed_independent) / len(independent), 4) if independent else None
     )
-    blocking_recall_all = round(1 - len(missed_all) / len(same), 4) if same else None
+    blocking_recall_all = round(1 - len(missed_blocks) / len(same), 4) if same else None
 
     auto_merge_total = 0
     auto_merge_on_different: list[tuple[str, str]] = []

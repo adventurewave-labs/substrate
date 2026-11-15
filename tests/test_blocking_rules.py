@@ -69,6 +69,31 @@ def test_r1_exact_email_same_family_auto_merge():
     assert outcome is not None and outcome.decision == Decision.AUTO_MERGE
 
 
+def test_whitespace_emails_never_auto_merge():
+    # Gate round-4: "   " normalizes to "" — two blank-email persons must not
+    # 'share' an address and R1-merge with zero evidence.
+    a = _p("a", emails=("   ",), given="Jane", family="Wu", employer="Acme")
+    b = _p("b", emails=("  ",), given="John", family="Wu", employer="Acme")
+    assert decide(a, b) is None or decide(a, b).decision == Decision.REVIEW
+
+
+def test_r1_conflicting_given_initials_review():
+    # Pat Lee vs Chris Lee on info@acme.com: same family, different initial —
+    # role-inbox smell, humans decide (gate round-4).
+    a = _p("a", emails=("info@acme.com",), given="Pat", family="Lee")
+    b = _p("b", emails=("info@acme.com",), given="Chris", family="Lee")
+    outcome = decide(a, b)
+    assert outcome is not None and outcome.decision == Decision.REVIEW
+    assert outcome.rule == "R1_exact_email_initial_conflict"
+
+
+def test_r1_same_given_initial_still_auto_merges():
+    a = _p("a", emails=("info@acme.com",), given="Pat", family="Lee")
+    b = _p("b", emails=("info@acme.com",), given="Patty", family="Lee")
+    outcome = decide(a, b)
+    assert outcome is not None and outcome.decision == Decision.AUTO_MERGE
+
+
 def test_r2_exact_email_different_family_review():
     a = _p("a", emails=("info@acme.com",), given="Pat", family="Lee")
     b = _p("b", emails=("info@acme.com",), given="Sam", family="Wu")
@@ -108,3 +133,34 @@ def test_decide_symmetric_with_differing_initials():
     b = _p("b", emails=("bsmith@acme.com",), given="Bob", family="Smith")
     assert decide(a, b) == decide(b, a)
     assert decide(a, b) is not None and decide(a, b).decision == Decision.REVIEW
+
+
+def test_r3_skips_free_mail_domains():
+    # j.smith@gmail.com vs jsmith@gmail.com: two different Smiths — no employer
+    # signal on free mail, no review-queue noise.
+    a = _p("a", emails=("j.smith@gmail.com",), given="Jane", family="Smith")
+    b = _p("b", emails=("jsmith@gmail.com",), given="John", family="Smith")
+    assert decide(a, b) is None
+
+
+def test_candidate_pairs_caps_role_inbox_buckets():
+    # 500 people on one info@ address: wholesale pairing is 125k REVIEW pairs of
+    # noise — bounded deterministic subsample instead.
+    crowd = [
+        _p(f"p{i}", emails=("info@acme.com",), given=f"G{i}", family="Wu")
+        for i in range(500)
+    ]
+    pairs = candidate_pairs(crowd)
+    max_pairs = 200 * 199 // 2  # capped bucket size
+    assert len(pairs) <= max_pairs
+    assert len(pairs) > 0
+
+    # And it's deterministic across orderings.
+    assert candidate_pairs(list(reversed(crowd))) == pairs
+
+
+def test_slugify_digests_non_ascii_names():
+    # CJK org names must not collapse every org into one "unknown" bucket.
+    assert slugify("株式会社スタート") != slugify("北京科技有限公司")
+    assert slugify("株式会社スタート") == slugify("株式会社スタート")  # stable
+    assert slugify("") == "unknown"  # genuinely empty stays unknown

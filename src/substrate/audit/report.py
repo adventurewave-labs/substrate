@@ -66,7 +66,11 @@ def build_report(
     anchored = 0
     titled = 0
     for person in persons:
-        emails = {normalize_email(e) for e in person.emails if e}
+        emails = {
+            normalize_email(e)
+            for e in person.emails
+            if isinstance(e, str) and e.strip()  # blanks are not contactable
+        }
         if emails:
             contactable += 1
             distinct_emails.update(emails)

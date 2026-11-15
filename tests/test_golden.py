@@ -108,17 +108,22 @@ def test_sample_determinism_survives_hash_randomization(tmp_path):
 
 
 def test_evaluate_headline_recall_is_block_independent():
-    # exact_email 'same' pairs share a block by construction; only random/
-    # hard_negative labels can move the gated metric.
+    # exact_email AND hard_negative pairs are block-found by construction (the
+    # hard-negative grouping key IS the nf: block) — only random labels count.
     persons = _population()
     pairs = [
         GoldenPair("exact_email", "1", "2", "same"),
+        GoldenPair("hard_negative", "3", "4", "same"),  # shares nf: block
         GoldenPair("random", "3", "5", "same"),  # no shared block
     ]
     report = evaluate(pairs, persons, decide)
     assert report.blocking_recall == 0.0  # honest: the random same-pair is missed
     assert report.blocking_recall_block_independent_pairs == 1
-    assert report.blocking_recall_all_labeled == 0.5  # 1/2 across all strata
+    # all-labeled: (1,2) share em:, (3,4) share nf:, (3,5) missed → 2/3
+    assert report.blocking_recall_all_labeled == 0.6667
+    # (3,4) is NOT in missed_blocks — it was FOUND through the nf: block, which is
+    # exactly why hard negatives can't measure recall; only (3,5) is a silent miss.
+    assert report.missed_blocks == [("3", "5")]
 
 
 def test_evaluate_no_independent_labels_recall_is_none():
@@ -134,7 +139,7 @@ def test_sample_caps_match_plan_contract():
     caps = DEFAULT_STRATUM_CAPS
     assert sum(caps.values()) == 500
     assert caps["hard_negative"] == 200
-    assert "random" in caps  # the only stratum that can catch a silent miss
+    assert "random" in caps  # the sole block-independent stratum (gated recall)
 
 
 def test_sample_produces_random_stratum_pairs():
