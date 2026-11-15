@@ -72,7 +72,8 @@ def build_report(
             distinct_emails.update(emails)
         if person.employer_slug is not None:
             anchored += 1
-        titled += 1 if person.name_given or person.name_family else 0
+        if person.has_title:  # actual job title on the current position, not name presence
+            titled += 1
 
     return AuditReport(
         tenant=tenant,

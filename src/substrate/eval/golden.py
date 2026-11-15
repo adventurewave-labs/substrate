@@ -5,8 +5,13 @@ fuzzy diff-org / hard negatives (40% of the sample) — hand-labeled in a worksh
 then measured: merge precision (decisions vs labels) and blocking recall (labeled
 'same' pairs that never share a block are silent misses; ≥99% or the keys change).
 
-Sampling is deterministic (sorted keys, evenly spaced) so a worksheet can be
-regenerated and stay stable. Pure logic — the DB adapter lives in engine.py.
+Honest-measurement note (gate review, PR #4): block-derived strata cannot reveal a
+missed block by construction — a pair that shares a key was found *through* that
+key. The ``random`` stratum samples pairs irrespective of blocks; only labels in
+that stratum (plus hard negatives) can exercise blocking recall truthfully.
+
+Sampling is deterministic (no RNG; sorted keys + evenly spaced strides) so a
+worksheet can be regenerated and stay stable. Pure logic — DB adapter in engine.py.
 """
 
 from __future__ import annotations
@@ -27,12 +32,13 @@ WORKSHEET_COLUMNS = (
     "right_person_id",
     "label",  # 'same' | 'different'; blank until hand-labeled
 )
-PAIR_KINDS = ("exact_email", "fuzzy_same_org", "fuzzy_diff_org", "hard_negative")
+PAIR_KINDS = ("exact_email", "fuzzy_same_org", "fuzzy_diff_org", "hard_negative", "random")
 DEFAULT_STRATUM_CAPS = {
-    "exact_email": 150,
-    "fuzzy_same_org": 150,
-    "fuzzy_diff_org": 100,
-    "hard_negative": 100,
+    "exact_email": 100,
+    "fuzzy_same_org": 100,
+    "fuzzy_diff_org": 50,
+    "hard_negative": 200,  # PLAN §4: hard negatives are 40% of the 500-pair sample
+    "random": 50,
 }
 
 
@@ -56,14 +62,20 @@ def sample_pairs(
     persons: list[PersonRecord],
     caps: dict[str, int] | None = None,
 ) -> list[GoldenPair]:
-    """Stratified sample over one tenant's persons. Deterministic; no RNG."""
+    """Stratified sample over one tenant's persons. Deterministic; no RNG.
+
+    Inverted index over blocking keys — candidate strata come from key buckets
+    (O(n·k) to build), never the O(n²·k) pairwise rescan.
+    """
     caps = {**DEFAULT_STRATUM_CAPS, **(caps or {})}
+    ids = sorted(p.person_id for p in persons)
     by_id = {p.person_id: p for p in persons}
 
     exact_email: list[tuple[str, str]] = []
     fuzzy_same_org: list[tuple[str, str]] = []
     fuzzy_diff_org: list[tuple[str, str]] = []
     hard_negative: list[tuple[str, str]] = []
+    random_pairs: list[tuple[str, str]] = []
 
     seen: set[tuple[str, str]] = set()
 
@@ -73,28 +85,32 @@ def sample_pairs(
             seen.add(pair)
             bucket.append(pair)
 
+    # Block-derived strata, from key buckets.
+    index: dict[str, list[str]] = {}
+    keys_by_id: dict[str, set[str]] = {}
     for person in persons:
-        for key in blocking_keys(person):
-            if not key.startswith(("em:", "nm:", "no:")):
-                continue  # dom: keys are R3-only, not sampling strata
-            others = [p.person_id for p in persons if p.person_id != person.person_id]
-            for other_id in others:
-                other = by_id[other_id]
-                if key not in blocking_keys(other):
-                    continue
+        keys_by_id[person.person_id] = blocking_keys(person)
+        for key in keys_by_id[person.person_id]:
+            index.setdefault(key, []).append(person.person_id)
+
+    for key, members in index.items():
+        if len(members) < 2 or key.startswith(("dom:", "nf:")):
+            continue  # dom/nf keys are rule- or negative-sampling concerns, not strata
+        for i, left in enumerate(members):
+            for right in members[i + 1 :]:
                 same_org = (
-                    person.employer_slug is not None
-                    and person.employer_slug == other.employer_slug
+                    by_id[left].employer_slug is not None
+                    and by_id[left].employer_slug == by_id[right].employer_slug
                 )
                 if key.startswith("em:"):
-                    add(exact_email, person.person_id, other.person_id)
+                    add(exact_email, left, right)
                 elif key.startswith("nm:"):
                     if same_org:
-                        add(fuzzy_same_org, person.person_id, other.person_id)
+                        add(fuzzy_same_org, left, right)
                     else:
-                        add(fuzzy_diff_org, person.person_id, other.person_id)
-                elif key.startswith("no:") and same_org:
-                    add(fuzzy_same_org, person.person_id, other.person_id)
+                        add(fuzzy_diff_org, left, right)
+                elif key.startswith("no:"):
+                    add(fuzzy_same_org, left, right)
 
     # Hard negatives: same phonetic family + same given initial, nothing else shared.
     by_phonetic: dict[tuple[str, str], list[PersonRecord]] = {}
@@ -113,12 +129,19 @@ def sample_pairs(
                 if not shared or all(k.startswith("nf:") for k in shared):
                     add(hard_negative, left_p.person_id, right_p.person_id)
 
+    # Random stratum: fixed-stride pairs over sorted ids, independent of blocks —
+    # the only stratum that can sample a true silent miss (same person, no shared key).
+    stride = max(1, len(ids) // max(caps["random"], 1))
+    for i in range(0, len(ids) - stride, stride):
+        add(random_pairs, ids[i], ids[i + stride])
+
     out: list[GoldenPair] = []
     for kind, bucket in (
         ("exact_email", exact_email),
         ("fuzzy_same_org", fuzzy_same_org),
         ("fuzzy_diff_org", fuzzy_diff_org),
         ("hard_negative", hard_negative),
+        ("random", random_pairs),
     ):
         for left_id, right_id in _sample_evenly(bucket, caps[kind]):
             out.append(GoldenPair(pair_kind=kind, left_id=left_id, right_id=right_id))
@@ -186,6 +209,11 @@ def evaluate(
 
     ``decide_fn(left, right) -> Outcome | None`` — injectable so the harness scores
     v0 rules today and the v1 scorer at W7–8 without rewrite.
+
+    ``blocking_recall`` is only as trustworthy as the labeled pair mix: block-derived
+    strata share a block by construction, so the metric moves only through labels
+    on the random and hard_negative strata. Interpret accordingly until a fully
+    labeled pass exists (M2 gate evidence).
     """
     by_id = {p.person_id: p for p in persons}
     labeled = [p for p in pairs if p.label is not None]

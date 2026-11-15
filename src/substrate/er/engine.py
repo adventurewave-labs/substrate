@@ -30,6 +30,27 @@ class ErRunStats:
     clusters: int
 
 
+# Kept as a module constant so tests can statically validate alias references
+# (the reviewer caught a SELECT referencing an undeclared alias — every DB
+# command shared this query, so one bad alias broke all of them).
+PERSON_LOAD_SQL = """
+SELECT p.id::text, p.emails, p.name_given, p.name_family,
+       cur.name_canonical, cur.title_norm
+FROM persons p
+LEFT JOIN LATERAL (
+    SELECT o.name_canonical, pos.title_norm
+    FROM positions pos
+    JOIN organizations o ON o.id = pos.org_id
+    WHERE pos.person_id = p.id
+      AND pos.txn_to IS NULL
+      AND (pos.valid_end IS NULL OR pos.valid_end >= CURRENT_DATE)
+    ORDER BY pos.txn_from DESC
+    LIMIT 1
+) cur ON true
+WHERE p.tenant_id = %s AND p.erased_at IS NULL
+"""
+
+
 def tenant_id_by_name(conn: psycopg.Connection, name: str) -> Any:
     row = conn.execute("SELECT id FROM tenants WHERE name = %s", (name,)).fetchone()
     if row is None:
@@ -40,28 +61,17 @@ def tenant_id_by_name(conn: psycopg.Connection, name: str) -> Any:
 def load_person_records(
     conn: psycopg.Connection, tenant_id: Any
 ) -> tuple[list[PersonRecord], dict[str, str]]:
-    """Persons + current employer, keyed by person uuid-string."""
-    rows = conn.execute(
-        """
-        SELECT p.id::text, p.emails, p.name_given, p.name_family,
-               o.name_canonical, ext.system
-        FROM persons p
-        LEFT JOIN external_ids ext
-               ON ext.entity_id = p.id AND ext.entity_type = 'person'
-        LEFT JOIN LATERAL (
-            SELECT o2.name_canonical
-            FROM positions pos
-            JOIN organizations o2 ON o2.id = pos.org_id
-            WHERE pos.person_id = p.id AND pos.txn_to IS NULL
-            LIMIT 1
-        ) cur ON true
-        WHERE p.tenant_id = %s AND p.erased_at IS NULL
-        """,
-        (tenant_id,),
-    ).fetchall()
+    """Live persons + current employer/title, one row per person (uuid-string keyed).
+
+    Deliberately no external_ids join: a person imported from two systems would
+    duplicate rows here (self-pairs, self-merge edges, inflated audit counts —
+    the reviewer caught exactly that). Identity anchoring lives in external_ids;
+    this query reads persons only.
+    """
+    rows = conn.execute(PERSON_LOAD_SQL, (tenant_id,)).fetchall()
 
     persons: list[PersonRecord] = []
-    for pid, emails, given, family, org_name, _system in rows:
+    for pid, emails, given, family, org_name, title_norm in rows:
         persons.append(
             PersonRecord(
                 person_id=pid,
@@ -70,6 +80,7 @@ def load_person_records(
                 name_family=family,
                 employer_slug=slugify(org_name) if org_name else None,
                 email_domain=email_domain(emails[0]) if emails else None,
+                has_title=title_norm is not None,
             )
         )
     return persons, {p.person_id: p.person_id for p in persons}
@@ -120,23 +131,31 @@ def run_er_v0(
             continue
         conn.execute(
             "INSERT INTO merge_decisions "
-            "(tenant_id, cluster_a, cluster_b, score, decision, featureset_version) "
-            "VALUES (%s, %s::uuid, %s::uuid, %s, %s, %s)",
+            "(tenant_id, cluster_a, cluster_b, score, decision, rule, featureset_version) "
+            "VALUES (%s, %s::uuid, %s::uuid, %s, %s, %s, %s)",
             (
                 tenant_id,
                 left_id,
                 right_id,
                 float(outcome.score),
                 outcome.decision.value,
+                outcome.rule,
                 FEATURESET_VERSION,
             ),
         )
         if outcome.decision == Decision.REVIEW:
             conn.execute(
                 "INSERT INTO review_queue "
-                "(tenant_id, left_person_id, right_person_id, score, featureset_version) "
-                "VALUES (%s, %s::uuid, %s::uuid, %s, %s)",
-                (tenant_id, left_id, right_id, float(outcome.score), FEATURESET_VERSION),
+                "(tenant_id, left_person_id, right_person_id, score, rule, featureset_version) "
+                "VALUES (%s, %s::uuid, %s::uuid, %s, %s, %s)",
+                (
+                    tenant_id,
+                    left_id,
+                    right_id,
+                    float(outcome.score),
+                    outcome.rule,
+                    FEATURESET_VERSION,
+                ),
             )
 
     if dry_run:

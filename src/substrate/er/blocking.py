@@ -38,6 +38,7 @@ class PersonRecord:
     name_family: str | None = None
     employer_slug: str | None = None  # slugified current-org name; None = unanchored
     email_domain: str | None = None
+    has_title: bool = False  # drives the audit's title_population (a measured metric)
 
 
 def slugify(name: str) -> str:

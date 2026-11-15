@@ -21,3 +21,10 @@ def test_reject_edges_never_enter_the_union():
     # Reject decisions simply do not arrive here — the caller filters. This test
     # pins that clusters() ignores anything but the edges it is given.
     assert clusters(["a", "b"], [MergeEdge("a", "b")]) == {"a": "a", "b": "a"}
+
+
+def test_edges_referencing_unknown_persons_are_skipped():
+    # Gate finding: an auto_merge edge whose person was later erased must not
+    # KeyError the cluster view — erasure is an invariant-sanctioned path.
+    result = clusters(["a", "b"], [MergeEdge("a", "erased-1"), MergeEdge("a", "b")])
+    assert result == {"a": "a", "b": "a"}

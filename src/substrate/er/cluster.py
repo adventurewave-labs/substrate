@@ -22,6 +22,8 @@ def clusters(person_ids: list[str], merge_edges: list[MergeEdge]) -> dict[str, s
     """Union-find over auto_merge edges → {person_id: canonical_id}.
 
     Every person appears in the result, singletons mapping to themselves.
+    Edges referencing unknown (e.g. erased) persons are skipped, never KeyError —
+    erasure is an invariant-sanctioned path and must not break the cluster view.
     """
     parent = {pid: pid for pid in person_ids}
 
@@ -34,6 +36,8 @@ def clusters(person_ids: list[str], merge_edges: list[MergeEdge]) -> dict[str, s
         return root
 
     for edge in merge_edges:
+        if edge.left_id not in parent or edge.right_id not in parent:
+            continue  # erased or otherwise absent — the live set wins
         a, b = find(edge.left_id), find(edge.right_id)
         if a != b:
             parent[max(a, b)] = min(a, b)

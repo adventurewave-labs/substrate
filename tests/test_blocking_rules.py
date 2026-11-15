@@ -79,3 +79,11 @@ def test_decide_is_symmetric():
     a = _p("a", emails=("j.smith@acme.com",), given="Jane", family="Smith")
     b = _p("b", emails=("jsmith@acme.com",), given="Janet", family="Smith")
     assert decide(a, b) == decide(b, a)
+
+
+def test_decide_symmetric_with_differing_initials():
+    # Gate finding: shapes built from one side's given initial broke symmetry.
+    a = _p("a", emails=("j.smith@acme.com",), given="Jane", family="Smith")
+    b = _p("b", emails=("bsmith@acme.com",), given="Bob", family="Smith")
+    assert decide(a, b) == decide(b, a)
+    assert decide(a, b) is not None and decide(a, b).decision == Decision.REVIEW

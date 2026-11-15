@@ -3,6 +3,7 @@ import pytest
 from substrate.er.blocking import PersonRecord, slugify
 from substrate.er.rules import decide
 from substrate.eval.golden import (
+    DEFAULT_STRATUM_CAPS,
     EvalReport,
     GoldenPair,
     evaluate,
@@ -39,7 +40,20 @@ def test_sample_is_deterministic_and_capped():
     pairs2 = sample_pairs(_population())
     assert pairs1 == pairs2
     kinds = {p.pair_kind for p in pairs1}
-    assert kinds <= {"exact_email", "fuzzy_same_org", "fuzzy_diff_org", "hard_negative"}
+    assert kinds <= {"exact_email", "fuzzy_same_org", "fuzzy_diff_org", "hard_negative", "random"}
+
+
+def test_sample_caps_match_plan_contract():
+    # PLAN §4: 500 pairs, hard negatives are 40% of the sample.
+    caps = DEFAULT_STRATUM_CAPS
+    assert sum(caps.values()) == 500
+    assert caps["hard_negative"] == 200
+    assert "random" in caps  # the only stratum that can catch a silent miss
+
+
+def test_sample_produces_random_stratum_pairs():
+    pairs = sample_pairs(_population())
+    assert any(p.pair_kind == "random" for p in pairs)
 
 
 def test_worksheet_roundtrip():

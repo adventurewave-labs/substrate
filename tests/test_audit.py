@@ -6,7 +6,7 @@ from substrate.audit.report import build_report, render_html
 from substrate.er.blocking import PersonRecord, slugify
 
 
-def _p(pid, *, emails=(), given=None, family=None, employer=None):
+def _p(pid, *, emails=(), given=None, family=None, employer=None, has_title=False):
     return PersonRecord(
         person_id=pid,
         emails=list(emails),
@@ -14,12 +14,13 @@ def _p(pid, *, emails=(), given=None, family=None, employer=None):
         name_family=family,
         employer_slug=slugify(employer) if employer else None,
         email_domain=emails[0].split("@", 1)[1] if emails else None,
+        has_title=has_title,
     )
 
 
 def test_report_math_with_clusters():
     persons = [
-        _p("1", emails=("a@acme.com",), given="Ann", family="Lee", employer="Acme"),
+        _p("1", emails=("a@acme.com",), given="Ann", family="Lee", employer="Acme", has_title=True),
         _p("2", emails=("a@acme.com",), given="Ann", family="Lee", employer="Acme"),
         _p("3", emails=("bob@beta.com",), family="Wu"),  # no org anchor
     ]
@@ -32,6 +33,7 @@ def test_report_math_with_clusters():
     assert report.contactable_rate == 1.0
     assert report.org_anchored_rate == round(2 / 3, 4)
     assert report.shared_email_collisions == 1  # a@acme.com on two persons
+    assert report.title_population == round(1 / 3, 4)  # actual titles, not name presence
 
 
 def test_report_empty_tenant_is_an_error():

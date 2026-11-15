@@ -43,6 +43,16 @@ def _email_local(email: str) -> str:
     return normalize_email(email).split("@", 1)[0]
 
 
+def _canonical_address(person: PersonRecord) -> tuple[str | None, str | None]:
+    """(domain, local) of one deterministic email — domain and local always come
+    from the same address, never mixed across a person's emails."""
+    emails = sorted(_emails(person))
+    if not emails:
+        return None, None
+    local, _, domain = emails[0].partition("@")
+    return (domain or None), local
+
+
 _ALNUM_LOCAL = re.compile(r"^[a-z0-9._-]+$")
 
 
@@ -68,23 +78,19 @@ def decide(left: PersonRecord, right: PersonRecord) -> Outcome | None:
     # R3 — same person-shaped local parts on the same corporate domain, same
     # family name: e.g. j.smith@ and smithj@. Two distinct people do share
     # domains — review, never auto.
-    ld, rd = left.email_domain, right.email_domain
-    if ld is not None and ld == rd and ld != "":
+    ldom, lloc = _canonical_address(left)
+    rdom, rloc = _canonical_address(right)
+    if ldom is not None and ldom == rdom and lloc and rloc and lloc != rloc:
         lf, rf = _full_name(left)[1], _full_name(right)[1]
-        if lf is not None and lf == rf:
-            lloc, rloc = _email_local(min(le) if le else ""), _email_local(min(re_) if re_ else "")
-            if (
-                lloc
-                and rloc
-                and lloc != rloc
-                and _ALNUM_LOCAL.match(lloc)
-                and _ALNUM_LOCAL.match(rloc)
-            ):
-                # initials-vs-fullname shape (j.smith / smithj / jsmith)
-                fam = lf.replace(" ", "")
-                given_init = (_full_name(left)[0] or lf)[:1]
-                initials = {f"{given_init}.{fam}", f"{given_init}{fam}", fam, f"{fam}.{given_init}"}
-                if lloc in initials or rloc in initials or lloc in rloc or rloc in lloc:
-                    return Outcome(Decision.REVIEW, 0.900, "R3_corporate_local_shape")
+        if lf is not None and lf == rf and _ALNUM_LOCAL.match(lloc) and _ALNUM_LOCAL.match(rloc):
+            # initials-vs-fullname shapes from BOTH given initials, so the rule is
+            # symmetric: j.smith@ vs bsmith@ (Jane/Bob Smith) reviews either way.
+            fam = lf.replace(" ", "")
+            lg, rg = _full_name(left)[0], _full_name(right)[0]
+            shapes: set[str] = set()
+            for initial in {(lg or lf)[:1], (rg or lf)[:1]}:
+                shapes |= {f"{initial}.{fam}", f"{initial}{fam}", fam, f"{fam}.{initial}"}
+            if lloc in shapes or rloc in shapes or lloc in rloc or rloc in lloc:
+                return Outcome(Decision.REVIEW, 0.900, "R3_corporate_local_shape")
 
     return None
