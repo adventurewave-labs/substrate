@@ -15,6 +15,7 @@
 ## Status
 
 - **M0 kickoff:** 2026-12-01 · gates land ~Feb / May / Sep / Dec 2027 (calendar slips before gates do)
+- **Current lane:** W3–4 — ER v0 (deterministic, precision-first), golden-set sampler/harness, Graph Audit v0 (PLAN §7)
 - **Current gate:** M2 — resolution ≥80% on 3 design-partner CRMs, merge precision ≥99.5%, zero privacy incidents
 - **Next artifact:** ~~design-partner outreach kit~~ shipped · next: code (M0–M2 build per PLAN §7), pitch deck deferred to M2 evidence
 

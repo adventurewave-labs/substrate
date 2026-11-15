@@ -1,9 +1,14 @@
 """Operator CLI. Stdlib argparse — no framework until ops demand one (Law 8).
 
 Subcommands:
-  migrate      apply pending SQL migrations
-  import-csv   parse a CRM export, persist it, emit a reconciliation report
-               (--dry-run parses and reports without touching the database)
+  migrate        apply pending SQL migrations
+  import-csv     parse a CRM export, persist it, emit a reconciliation report
+                 (--dry-run parses and reports without touching the database)
+  er-v0          deterministic entity resolution over an imported tenant
+                 (--dry-run scores candidates without writing decisions)
+  golden-sample  write the stratified golden-set labeling worksheet for a tenant
+  golden-eval    score labeled worksheet vs the ER rule set (precision + blocking recall)
+  audit          Graph Audit v0 resolution report (JSON + HTML)
 """
 
 from __future__ import annotations
@@ -59,6 +64,67 @@ def cmd_import_csv(args: argparse.Namespace) -> int:
     return 0
 
 
+def _connect(args: argparse.Namespace):
+    url = args.database_url or get_settings().database_url
+    return db.connect(url)
+
+
+def cmd_er_v0(args: argparse.Namespace) -> int:
+    from substrate.er.engine import run_er_v0, stats_json, tenant_id_by_name
+
+    conn = _connect(args)
+    try:
+        tenant_id = tenant_id_by_name(conn, args.tenant)
+        stats = run_er_v0(conn, tenant_id, dry_run=args.dry_run)
+    finally:
+        conn.close()
+    print(stats_json(stats))
+    return 0
+
+
+def cmd_golden_sample(args: argparse.Namespace) -> int:
+    from substrate.er.engine import run_golden_sample, tenant_id_by_name
+
+    conn = _connect(args)
+    try:
+        tenant_id = tenant_id_by_name(conn, args.tenant)
+        worksheet = run_golden_sample(conn, tenant_id)
+    finally:
+        conn.close()
+    Path(args.out).write_text(worksheet)
+    print(f"worksheet -> {args.out}")
+    return 0
+
+
+def cmd_golden_eval(args: argparse.Namespace) -> int:
+    from substrate.er.engine import run_golden_eval, tenant_id_by_name
+
+    worksheet = Path(args.worksheet).read_text()
+    conn = _connect(args)
+    try:
+        tenant_id = tenant_id_by_name(conn, args.tenant)
+        result = run_golden_eval(conn, tenant_id, worksheet)
+    finally:
+        conn.close()
+    Path(args.out).write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
+    print(f"metrics -> {args.out}")
+    return 0
+
+
+def cmd_audit(args: argparse.Namespace) -> int:
+    from substrate.er.engine import run_audit
+
+    conn = _connect(args)
+    try:
+        report, page = run_audit(conn, args.tenant)
+    finally:
+        conn.close()
+    Path(args.out).write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
+    Path(args.out.removesuffix(".json") + ".html").write_text(page)
+    print(f"audit -> {args.out} (+ .html)")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="substrate", description="Substrate core CLI")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -76,6 +142,31 @@ def main(argv: list[str] | None = None) -> int:
     p_import.add_argument("--dry-run", action="store_true", help="parse + report only, no database")
     p_import.add_argument("--database-url", default=None, help="overrides SUBSTRATE_DATABASE_URL")
     p_import.set_defaults(func=cmd_import_csv)
+
+    def with_db(p: argparse.ArgumentParser) -> None:
+        p.add_argument("--tenant", required=True)
+        p.add_argument("--database-url", default=None, help="overrides SUBSTRATE_DATABASE_URL")
+
+    p_er = sub.add_parser("er-v0", help="deterministic entity resolution for a tenant")
+    with_db(p_er)
+    p_er.add_argument("--dry-run", action="store_true", help="score candidates, write nothing")
+    p_er.set_defaults(func=cmd_er_v0)
+
+    p_sample = sub.add_parser("golden-sample", help="write golden-set labeling worksheet")
+    with_db(p_sample)
+    p_sample.add_argument("--out", required=True, help="worksheet CSV path")
+    p_sample.set_defaults(func=cmd_golden_sample)
+
+    p_eval = sub.add_parser("golden-eval", help="evaluate labeled worksheet vs ER rules")
+    with_db(p_eval)
+    p_eval.add_argument("--worksheet", required=True, help="labeled worksheet CSV")
+    p_eval.add_argument("--out", required=True, help="metrics JSON path")
+    p_eval.set_defaults(func=cmd_golden_eval)
+
+    p_audit = sub.add_parser("audit", help="Graph Audit v0 resolution report")
+    with_db(p_audit)
+    p_audit.add_argument("--out", required=True, help="report JSON path (HTML alongside)")
+    p_audit.set_defaults(func=cmd_audit)
 
     args = parser.parse_args(argv)
     return int(args.func(args))
