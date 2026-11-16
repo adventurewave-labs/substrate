@@ -27,7 +27,7 @@ python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"
 .venv/bin/substrate import-csv --tenant demo --contacts-file export.csv --report report.json --dry-run
 ```
 
-Layout: `src/substrate/` core services (config · db + migration runner · reconciliation · importers · store) · `db/migrations/` numbered SQL · `terraform/` infra (applied from the remote plane only) · `docs/` PRD / PLAN / KIT.
+Layout: `src/substrate/` core services (config · db + migration runner · reconciliation · importers · store) · `src/substrate/migrations/` numbered SQL (packaged data) · `terraform/` infra (applied from the remote plane only) · `docs/` PRD / PLAN / KIT.
 
 ## Working agreements
 

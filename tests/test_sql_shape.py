@@ -7,6 +7,7 @@ constants pins that regression class. Live round-trips ride the remote plane
 (PLAN §7 W2 bootstrap).
 """
 
+import pathlib
 import re
 
 from substrate.er.engine import PERSON_LOAD_SQL
@@ -83,3 +84,22 @@ def test_migration_indexes_only_reference_declared_columns():
                 assert column in tables[table], (
                     f"{path.name}: index column {table}.{column} is not declared"
                 )
+
+
+def test_migrations_ship_inside_the_package():
+    # Deploy-drift pin (first Railway deploy): the runner must resolve migrations
+    # INSIDE the installed package — repo-relative resolution silently reported
+    # "nothing pending" over an empty database in the deployed image.
+    import substrate.db as db_module
+    from substrate.db import MIGRATIONS_DIR
+
+    package_dir = pathlib.Path(db_module.__file__).resolve().parent
+    assert MIGRATIONS_DIR.parent == package_dir  # inside the package, not the repo
+    assert (MIGRATIONS_DIR / "001_init.sql").exists()
+
+
+def test_dockerfile_guards_the_installed_resolution_path():
+    dockerfile = pathlib.Path(__file__).resolve().parents[1] / "Dockerfile"
+    text = dockerfile.read_text()
+    assert "import substrate.db as d" in text  # guard checks the installed path
+    assert "COPY db/" not in text  # the stale source-tree copy must not return
