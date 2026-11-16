@@ -246,6 +246,69 @@ def cmd_canary(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_scheduler(args: argparse.Namespace) -> int:
+    # Delivery destinations are PER TENANT (tenants.slack_webhook_url) — a global
+    # webhook would route every tenant's alerts to one Slack (W9 gate r1).
+    if args.interval is not None and args.interval <= 0:
+        raise SystemExit("--interval must be a positive number of seconds")
+
+    from substrate.scheduler import CycleReport, run_cycle_all, run_forever
+    from substrate.sources.http import Fetcher
+
+    def cycle() -> CycleReport:
+        conn = _connect(args)
+        try:
+            return run_cycle_all(conn, Fetcher())
+        finally:
+            conn.close()
+
+    if args.once:
+        conn = _connect(args)
+        try:
+            report = run_cycle_all(conn, Fetcher())
+        finally:
+            conn.close()
+        print(f"cycle: {json.dumps(report.as_dict(), sort_keys=True)}")
+        return 1 if report.errors else 0  # tenant failures are real failures
+
+    interval = args.interval
+    stop_requested = {"value": False}
+
+    import signal
+
+    def _handle_term(signum, frame):  # noqa: ANN001 — stdlib handler signature
+        stop_requested["value"] = True
+
+    signal.signal(signal.SIGTERM, _handle_term)
+    signal.signal(signal.SIGINT, _handle_term)
+
+    def stop() -> bool:
+        return stop_requested["value"]
+
+    log_path = args.log
+    run_forever(
+        cycle,
+        interval_seconds=interval,
+        stop=stop,
+        log=lambda msg: _append_log(log_path, msg),
+    )
+    return 0
+
+
+def _append_log(path: str | None, msg: str) -> None:
+    if not path:
+        print(msg)
+        return
+    try:
+        with open(path, "a", encoding="utf-8") as fh:
+            fh.write(f"{msg}\n")
+    except OSError as exc:
+        # The loop must not die because its log file is unwritable (scheduler
+        # logging contract): fall back to stderr.
+        print(msg, file=sys.stderr)
+        print(f"log write failed ({exc}), continuing to stderr", file=sys.stderr)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="substrate", description="Substrate core CLI")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -339,6 +402,16 @@ def main(argv: list[str] | None = None) -> int:
     )
     p_canary.add_argument("--out", required=True, help="replay report JSON path")
     p_canary.set_defaults(func=cmd_canary)
+
+    p_sched = sub.add_parser("scheduler", help="run the crawl→detect→deliver loop")
+    p_sched.add_argument(
+        "--once", action="store_true", help="run one cycle and exit (cron-style)"
+    )
+    p_sched.add_argument(
+        "--interval", type=int, default=3600, help="seconds between cycles (loop mode)"
+    )
+    p_sched.add_argument("--log", default=None, help="append cycle log lines to a file")
+    p_sched.set_defaults(func=cmd_scheduler)
 
     args = parser.parse_args(argv)
     return int(args.func(args))

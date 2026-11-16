@@ -79,3 +79,12 @@ def test_detect_rejects_contradictory_flags(monkeypatch, tmp_path):
             "--detect-only", "--deliver-only",
             "--report", str(tmp_path / "r.json"),
         ])
+
+
+def test_scheduler_rejects_nonpositive_intervals(monkeypatch, tmp_path):
+    # Gate round-9: zero/negative intervals = unthrottled retry loop. Rejected
+    # before any DB connection (garbage DATABASE_URL proves it).
+    monkeypatch.setenv("SUBSTRATE_DATABASE_URL", "postgresql://no:such@localhost:1/none")
+    for bad in ("0", "-5"):
+        with pytest.raises(SystemExit, match="positive number of seconds"):
+            main(["scheduler", "--interval", bad])
