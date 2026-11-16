@@ -1,0 +1,20 @@
+{
+  "jobs": [
+    {
+      "id": "ashby-1",
+      "title": "Product Designer",
+      "jobUrl": "https://jobs.ashbyhq.com/gamma/ashby-1",
+      "department": "Product",
+      "location": "San Francisco",
+      "publishedAt": "2026-11-06T00:00:00.000Z"
+    },
+    {
+      "id": "ashby-2",
+      "title": "Customer Success Manager",
+      "jobUrl": "https://jobs.ashbyhq.com/gamma/ashby-2",
+      "department": "Customer",
+      "location": "Remote US",
+      "publishedAt": "2026-11-07T00:00:00.000Z"
+    }
+  ]
+}

@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <title>Funding Press Wire</title>
+    <item>
+      <title>Acme Corp raises $12M Series A to automate GTM identity</title>
+      <link>https://presswire.example/acme-series-a</link>
+      <pubDate>Fri, 06 Nov 2026 09:00:00 GMT</pubDate>
+    </item>
+    <item>
+      <title>Beta Industries closes $4.5M seed round</title>
+      <link>https://presswire.example/beta-seed</link>
+      <pubDate>Thu, 05 Nov 2026 15:00:00 GMT</pubDate>
+    </item>
+    <item>
+      <title>Acme Corp ships new integration marketplace</title>
+      <link>https://presswire.example/acme-marketplace</link>
+      <pubDate>Wed, 04 Nov 2026 11:00:00 GMT</pubDate>
+    </item>
+    <item>
+      <title>Malformed item without link</title>
+      <pubDate>Wed, 04 Nov 2026 10:00:00 GMT</pubDate>
+    </item>
+  </channel>
+</rss>

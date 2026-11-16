@@ -1,0 +1,29 @@
+{
+  "jobs": [
+    {
+      "id": 9001,
+      "title": "Senior Backend Engineer",
+      "absolute_url": "https://boards.greenhouse.io/acme/jobs/9001",
+      "updated_at": "2026-11-01T12:00:00-05:00",
+      "departments": [{"name": "Engineering"}],
+      "offices": [{"name": "New York"}]
+    },
+    {
+      "id": 9002,
+      "title": "Account Executive, Mid-Market",
+      "absolute_url": "https://boards.greenhouse.io/acme/jobs/9002",
+      "updated_at": "2026-11-03T09:30:00-05:00",
+      "departments": [{"name": "Sales"}],
+      "offices": []
+    },
+    {
+      "id": 9003,
+      "title": "Chief of Staff",
+      "absolute_url": "https://boards.greenhouse.io/acme/jobs/9003",
+      "updated_at": "2026-11-05T10:00:00-05:00",
+      "departments": [{"name": "Operations"}],
+      "offices": [{"name": "New York"}]
+    }
+  ],
+  "meta": {"total": 3}
+}

@@ -131,6 +131,72 @@ def cmd_audit(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_watch_add(args: argparse.Namespace) -> int:
+    conn = _connect(args)
+    try:
+        from substrate.store import ensure_tenant
+
+        with conn.transaction():
+            tenant_id = ensure_tenant(conn, args.tenant, "csv")
+            conn.execute(
+                "SELECT watch_upsert(%s, %s, %s, %s, %s, %s)",
+                (tenant_id, args.domain.lower(), args.greenhouse, args.lever, args.ashby, args.cik),
+            )
+    finally:
+        conn.close()
+    print(f"watch: {args.domain} updated for tenant {args.tenant}")
+    return 0
+
+
+def cmd_crawl(args: argparse.Namespace) -> int:
+    import json
+    from datetime import date
+
+    from substrate.er.engine import tenant_id_by_name
+    from substrate.sources.crawl import (
+        crawl_careers_for_tenant,
+        crawl_edgar_for_tenant,
+        crawl_press_for_tenant,
+    )
+    from substrate.sources.http import Fetcher
+    from substrate.sources.llm import LlmGateway
+
+    conn = _connect(args)
+    try:
+        tenant_id = tenant_id_by_name(conn, args.tenant)
+        if args.source == "careers":
+            report = crawl_careers_for_tenant(conn, tenant_id, Fetcher(), dry_run=args.dry_run)
+        elif args.source == "edgar":
+            from substrate.sources.edgar import sec_user_agent
+
+            report = crawl_edgar_for_tenant(
+                conn,
+                tenant_id,
+                Fetcher(user_agent=sec_user_agent()),  # SEC UA on robots fetch too
+                start=date.fromisoformat(args.start) if args.start else None,
+                end=date.fromisoformat(args.end) if args.end else None,
+                dry_run=args.dry_run,
+            )
+        elif args.source == "press":
+            if not args.feed_url:
+                raise SystemExit("press crawl needs --feed-url")
+            report = crawl_press_for_tenant(
+                conn,
+                tenant_id,
+                Fetcher(),
+                LlmGateway(database_url=args.database_url),
+                args.feed_url,
+                dry_run=args.dry_run,
+            )
+        else:
+            raise SystemExit(f"unknown source {args.source!r}")
+    finally:
+        conn.close()
+    Path(args.report).write_text(json.dumps(report.as_dict(), indent=2, sort_keys=True) + "\n")
+    print(f"crawl {args.source}: {report.as_dict()} -> {args.report}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="substrate", description="Substrate core CLI")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -178,6 +244,27 @@ def main(argv: list[str] | None = None) -> int:
     with_db(p_audit)
     p_audit.add_argument("--out", required=True, help="report JSON path (HTML alongside)")
     p_audit.set_defaults(func=cmd_audit)
+
+    p_watch = sub.add_parser("watch", help="manage the source watch list")
+    watch_sub = p_watch.add_subparsers(dest="watch_command", required=True)
+    p_watch_add = watch_sub.add_parser("add", help="upsert one watch row")
+    with_db(p_watch_add)
+    p_watch_add.add_argument("--domain", required=True)
+    p_watch_add.add_argument("--greenhouse", default=None, help="public board token")
+    p_watch_add.add_argument("--lever", default=None, help="public board token")
+    p_watch_add.add_argument("--ashby", default=None, help="public board token")
+    p_watch_add.add_argument("--cik", default=None, help="SEC CIK for Form D watch")
+    p_watch_add.set_defaults(func=cmd_watch_add)
+
+    p_crawl = sub.add_parser("crawl", help="run a source crawler for a tenant")
+    with_db(p_crawl)
+    p_crawl.add_argument("--source", required=True, choices=("careers", "edgar", "press"))
+    p_crawl.add_argument("--feed-url", default=None, help="press: RSS feed URL")
+    p_crawl.add_argument("--start", default=None, help="edgar: window start YYYY-MM-DD")
+    p_crawl.add_argument("--end", default=None, help="edgar: window end YYYY-MM-DD")
+    p_crawl.add_argument("--report", required=True, help="crawl report JSON path")
+    p_crawl.add_argument("--dry-run", action="store_true", help="fetch + parse, write nothing")
+    p_crawl.set_defaults(func=cmd_crawl)
 
     args = parser.parse_args(argv)
     return int(args.func(args))

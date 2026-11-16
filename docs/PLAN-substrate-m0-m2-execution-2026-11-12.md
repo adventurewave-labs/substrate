@@ -30,6 +30,13 @@
 | LLM extraction | Provider-agnostic gateway, structured output, aggressive caching | Extraction only; never identity (PRD anti-drift rule) |
 | IaC | Terraform from day 1, staging = prod-shaped | Data company = infra hygiene is the product |
 
+> **Deviation (2026-11-15, W5–6 lane):** Dagster does not yet wheel for the dev
+> venv's Python 3.14, so the crawl pipeline ships as plain deterministic functions
+> with checkpoint reuse (`import_checkpoints`) and an injectable HTTP transport.
+> The functions wrap into Dagster assets unchanged once the venv pins to a
+> supported Python (tracked as W9 housekeeping). No behavioral change to the
+> W5–6 acceptance criteria.
+
 ---
 
 ## 2. Architecture (v1 topology)

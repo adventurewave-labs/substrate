@@ -1,0 +1,17 @@
+[
+  {
+    "id": "abc-123",
+    "text": "Staff Software Engineer",
+    "createdAt": 1762944000000,
+    "hostedUrl": "https://jobs.lever.co/beta/abc-123",
+    "categories": {"team": "Engineering", "location": "Remote EU", "commitment": "Full-time"},
+    "workplaceType": "remote"
+  },
+  {
+    "id": "def-456",
+    "text": "VP Marketing",
+    "createdAt": 1763030400000,
+    "hostedUrl": "https://jobs.lever.co/beta/def-456",
+    "categories": {"team": "Marketing", "location": "Amsterdam", "commitment": "Full-time"}
+  }
+]
