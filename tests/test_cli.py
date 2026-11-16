@@ -68,3 +68,14 @@ def test_audit_rejects_non_json_out_before_touching_a_database(monkeypatch):
     monkeypatch.setenv("SUBSTRATE_DATABASE_URL", "postgresql://no:such@localhost:1/none")
     with pytest.raises(SystemExit, match="must end with .json"):
         main(["audit", "--tenant", "x", "--out", "report.html"])
+
+
+def test_detect_rejects_contradictory_flags(monkeypatch, tmp_path):
+    # Both flags together does nothing useful — must fail before touching a DB.
+    monkeypatch.setenv("SUBSTRATE_DATABASE_URL", "postgresql://no:such@localhost:1/none")
+    with pytest.raises(SystemExit, match="mutually exclusive"):
+        main([
+            "detect", "--tenant", "x",
+            "--detect-only", "--deliver-only",
+            "--report", str(tmp_path / "r.json"),
+        ])

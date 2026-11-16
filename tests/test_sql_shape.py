@@ -44,6 +44,18 @@ def test_person_load_sql_scopes_bitemporal_axes():
     assert "pos.valid_end IS NULL OR pos.valid_end >= CURRENT_DATE" in PERSON_LOAD_SQL
 
 
+def test_pair_sql_deterministic_version_ordering():
+    # Gate round-11: same-timestamp versions must not reverse — valid_start
+    # disambiguates world time within the same transaction-time bucket.
+    from substrate.signals.detector import _PAIR_SQL
+
+    assert "ORDER BY p.txn_from, p.valid_start, p.id" in _PAIR_SQL
+    expected = (
+        "ORDER BY cur.person_id, cur.txn_from, cur.valid_start, cur.id"
+    )
+    assert expected in _PAIR_SQL
+
+
 def test_person_load_sql_deterministic_employer_pick():
     # Gate finding: LATERAL ... LIMIT 1 without ORDER BY is nondeterministic.
     assert re.search(r"ORDER BY\s+pos\.txn_from DESC\s+LIMIT 1", PERSON_LOAD_SQL)
@@ -103,3 +115,72 @@ def test_dockerfile_guards_the_installed_resolution_path():
     text = dockerfile.read_text()
     assert "import substrate.db as d" in text  # guard checks the installed path
     assert "COPY db/" not in text  # the stale source-tree copy must not return
+
+
+def test_seniority_backfill_migration_matches_python_classifier():
+    # Gate round-5: migration 005 hand-copies the classifier's keyword table —
+    # pin the two against drift. Parses the SQL band regexes and compares the
+    # keyword sets (as plain words) against the Python classifier's table.
+    from substrate.db import MIGRATIONS_DIR
+
+    migrations_dir = MIGRATIONS_DIR  # substrate package migrations
+    migration = next(
+        f for f in sorted(migrations_dir.glob("*.sql")) if "backfill_seniority" in f.name
+    )
+    body = migration.read_text()
+
+    # Python side: band → keyword words (flattened)
+    import substrate.seniority as sen
+
+    py_bands = [band for band, _ in sen._SENIORITY_KEYWORDS]
+
+    # SQL side: ordered band lines with their regex alternatives
+    sql_lines = [
+        line for line in body.splitlines()
+        if "THEN '" in line and "\\m" in line
+    ]
+    sql_bands = []
+    for line in sql_lines:
+        band = line.split("THEN '")[1].split("'")[0]
+        match = re.search(r"\\m\((.*?)\)\\M", line)
+        keywords = (
+            match.group(1).split("|")
+            if match
+            else re.search(r"\\m(.*?)\\M", line).group(1).split("|")
+        )
+        # SQL regexes must escape literal dots: an unescaped "." is a wildcard
+        # and matches "srxdirector" (gate review, W7–8 r7).
+        for k in keywords:
+            assert re.search(r"(?<!\\)\.", k) is None, (
+                f"unescaped dot in {band!r} keyword {k!r} (wildcard, not literal)"
+            )
+        sql_bands.append((band, {k.replace("\\.", ".") for k in keywords}))
+
+    # Bands appear in the same order.
+    assert [b for b, _ in sql_bands] == py_bands
+
+    # Each SQL keyword set matches the Python keyword set for that band.
+    # Trailing dots normalize away on both sides: "sr." and "sr" match
+    # identically under word-boundary regexes (a dot can't end a word).
+    def _norm(keywords: set[str]) -> set[str]:
+        return {k.rstrip(".") for k in keywords}
+
+    for band, sql_keywords in sql_bands:
+        py_keywords = {
+            k for b, keywords in sen._SENIORITY_KEYWORDS if b == band for k in keywords
+        }
+        normalized = _norm({k.replace("\\.", ".") for k in sql_keywords})
+        assert normalized == _norm(py_keywords), f"drift in band {band!r}"
+
+
+def test_migration_006_pins_delivery_attempts():
+    # Gate round-11: the bounded-retry column is schema-backed, not just app code.
+    from substrate.db import MIGRATIONS_DIR
+
+    migration = next(
+        f for f in sorted(MIGRATIONS_DIR.glob("*.sql")) if "delivery_attempts" in f.name
+    )
+    needle = (
+        "ADD COLUMN IF NOT EXISTS delivery_attempts int NOT NULL DEFAULT 0"
+    )
+    assert needle in migration.read_text()

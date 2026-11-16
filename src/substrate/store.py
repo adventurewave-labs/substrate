@@ -23,6 +23,8 @@ from uuid import UUID
 
 import psycopg
 
+from substrate.seniority import classify_seniority
+
 EXTRACTOR_VERSION = "import-0.1.0"
 
 
@@ -210,9 +212,9 @@ def upsert_position(
         conn.execute("UPDATE positions SET txn_to = now() WHERE id = %s", (current[0],))
         stats.positions_closed += 1
     new_pos = conn.execute(
-        "INSERT INTO positions (tenant_id, person_id, org_id, title_norm) "
-        "VALUES (%s, %s, %s, %s) RETURNING id",
-        (tenant_id, person_id, org_id, title),
+        "INSERT INTO positions (tenant_id, person_id, org_id, title_norm, seniority) "
+        "VALUES (%s, %s, %s, %s, %s) RETURNING id",
+        (tenant_id, person_id, org_id, title, classify_seniority(title)),
     ).fetchone()
     assert new_pos is not None
     position_id: UUID = new_pos[0]

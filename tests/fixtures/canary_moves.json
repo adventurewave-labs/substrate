@@ -1,0 +1,29 @@
+[
+  {
+    "marker": "canary-1-devtools-cto",
+    "name_given": "Ines",
+    "name_family": "Vargas",
+    "org_name": "Vanguard Robotics",
+    "new_org_name": "Kestrel Systems",
+    "new_title": "CTO",
+    "move_date": "2026-11-01"
+  },
+  {
+    "marker": "canary-2-fintech-vp",
+    "name_given": "Tomas",
+    "name_family": "Reyes",
+    "org_name": "Ledgerline",
+    "new_org_name": "Northwind Pay",
+    "new_title": "VP Engineering",
+    "move_date": "2026-11-03"
+  },
+  {
+    "marker": "canary-3-hrtech-ae",
+    "name_given": "Sana",
+    "name_family": "Okafor",
+    "org_name": "Peopleframe",
+    "new_org_name": "Brightloop",
+    "new_title": "Account Executive",
+    "move_date": "2026-11-05"
+  }
+]

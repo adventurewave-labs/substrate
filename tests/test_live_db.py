@@ -516,3 +516,422 @@ def test_two_watch_rows_one_org_merge(dbConn):
     conn.commit()
     assert stable.stats.postings_written == 0
     assert stable.stats.claims_written == 0
+
+
+def test_detector_delivery_roundtrip(dbConn):
+    """Re-import with a changed title/org → detector emits job_change (idempotent)
+    → delivery through a fake sink marks delivered_at."""
+    from uuid import uuid4
+
+    from substrate.signals.delivery import deliver_pending
+    from substrate.signals.detector import detect_for_tenant
+    from substrate.store import persist_contacts
+
+    class RecordingSink:
+        def __init__(self) -> None:
+            self.payloads: list[dict] = []
+
+        def deliver(self, payload: dict) -> bool:
+            self.payloads.append(payload)
+            return True
+
+    conn = dbConn
+    tenant = f"dt-{uuid4().hex[:8]}"
+    tenant_id = _fresh_tenant(conn, tenant)
+
+    # Import 1: Ann at Acme.
+    rows1 = [{
+        "contact_id": "003aa", "email": "ann@acme.com", "name_given": "Ann",
+        "name_family": "Lee", "title": "VP Engineering", "org_name": "Acme",
+    }]
+    with conn.transaction():
+        persist_contacts(conn, tenant_id, rows1, system="csv")
+
+    # Detection before any move: silence. first_run=False: this test exercises
+    # DELIVERY mechanics (pending events) — not first-run semantics.
+    stats0 = detect_for_tenant(conn, tenant_id, first_run=False)
+    assert stats0.events_written == 0
+
+    # Import 2: same external id, moved to Beta as CTO.
+    rows2 = [{
+        "contact_id": "003aa", "email": "ann@acme.com", "name_given": "Ann",
+        "name_family": "Lee", "title": "CTO", "org_name": "Beta",
+    }]
+    with conn.transaction():
+        persist_contacts(conn, tenant_id, rows2, system="csv")
+
+    # Detection (first_run=False): one job_change event.
+    stats = detect_for_tenant(conn, tenant_id, first_run=False)
+    assert stats.job_changes == 1
+    assert stats.events_written == 1
+
+    # Re-run: same pairs, idempotency key identical → nothing new.
+    rerun = detect_for_tenant(conn, tenant_id, first_run=False)
+    assert rerun.events_written == 0
+
+    event = conn.execute(
+        "SELECT event_type, old_state->>'org_name', new_state->>'org_name', delivered_at "
+        "FROM events WHERE tenant_id = %s",
+        (tenant_id,),
+    ).fetchone()
+    assert event[0] == "job_change"
+    assert event[1] == "Acme" and event[2] == "Beta"
+    assert event[3] is None  # not yet delivered
+
+    # Delivery through a recording sink marks delivered_at.
+    sink = RecordingSink()
+    delivery = deliver_pending(conn, tenant_id, sink)
+    assert delivery.delivered == 1
+    assert len(sink.payloads) == 1
+    assert "Acme" in sink.payloads[0]["text"] and "Beta" in sink.payloads[0]["text"]
+
+    # Committed-state proof on a SECOND connection: a savepoint-only write would
+    # be invisible here (gate round-3: delivered_at must survive rollback/close).
+    import os
+
+    import psycopg
+
+    conn2 = psycopg.connect(os.environ["SUBSTRATE_TEST_DATABASE_URL"])
+    delivered = conn2.execute(
+        "SELECT delivered_at FROM events WHERE tenant_id = %s", (tenant_id,)
+    ).fetchone()
+    conn2.close()
+    assert delivered[0] is not None, "delivered_at was not committed"
+
+
+def test_promotion_signal_roundtrip(dbConn):
+    """Same org, seniority up → promotion event, not job_change."""
+    from uuid import uuid4
+
+    from substrate.signals.delivery import deliver_pending
+    from substrate.signals.detector import detect_for_tenant
+    from substrate.store import persist_contacts
+
+    class RecordingSink:
+        def __init__(self) -> None:
+            self.payloads: list[dict] = []
+
+        def deliver(self, payload: dict) -> bool:
+            self.payloads.append(payload)
+            return True
+
+    conn = dbConn
+    tenant = f"pr-{uuid4().hex[:8]}"
+    tenant_id = _fresh_tenant(conn, tenant)
+
+    with conn.transaction():
+        persist_contacts(conn, tenant_id, [{
+            "contact_id": "003pp", "email": "pat@acme.com", "name_given": "Pat",
+            "name_family": "Ng", "title": "Engineer", "org_name": "Acme",
+        }], system="csv")
+    with conn.transaction():
+        persist_contacts(conn, tenant_id, [{
+            "contact_id": "003pp", "email": "pat@acme.com", "name_given": "Pat",
+            "name_family": "Ng", "title": "Director of Engineering", "org_name": "Acme",
+        }], system="csv")
+
+    stats = detect_for_tenant(conn, tenant_id, first_run=False)
+    assert stats.promotions == 1
+    assert stats.job_changes == 0
+
+    sink = RecordingSink()
+    delivery = deliver_pending(conn, tenant_id, sink)
+    assert delivery.delivered == 1
+    assert "promoted" in sink.payloads[0]["text"]
+
+
+def test_no_sink_reports_skipped(dbConn):
+    from uuid import uuid4
+
+    from substrate.signals.delivery import deliver_pending
+    from substrate.signals.detector import detect_for_tenant
+    from substrate.store import persist_contacts
+
+    conn = dbConn
+    tenant = f"ns-{uuid4().hex[:8]}"
+    tenant_id = _fresh_tenant(conn, tenant)
+    with conn.transaction():
+        persist_contacts(conn, tenant_id, [
+            {"contact_id": "1", "email": "a@x.com", "name_given": "A", "name_family": "B",
+             "title": "VP", "org_name": "Acme"},
+        ], system="csv")
+    with conn.transaction():
+        persist_contacts(conn, tenant_id, [
+            {"contact_id": "1", "email": "a@x.com", "name_given": "A", "name_family": "B",
+             "title": "CTO", "org_name": "Beta"},
+        ], system="csv")
+    detect_for_tenant(conn, tenant_id, first_run=False)
+
+    delivery = deliver_pending(conn, tenant_id, None)  # no sink configured
+    assert delivery.skipped_not_configured == 1
+    assert delivery.delivered == 0
+
+
+def test_canary_replay_rolls_back(dbConn):
+    """Canary replay owns a dedicated rolled-back tenant: recall measured, nothing persists."""
+    from pathlib import Path
+
+    from substrate.signals.canary import replay
+
+    conn = dbConn
+    before_tenants = conn.execute("SELECT count(*) FROM tenants").fetchone()[0]
+    before_persons = conn.execute("SELECT count(*) FROM persons").fetchone()[0]
+
+    fixture = Path(__file__).parent / "fixtures" / "canary_moves.json"
+    report = replay(conn, fixture)  # owns + rolls back its dedicated tenant
+    conn.commit()  # settle after the rollback
+
+    assert report["canaries"] == 3
+    assert report["detection_recall"] == 1.0
+    assert report["missed"] == []
+    assert report["pairs_diffed"] == 3  # scoped to the canary tenant only
+
+    # Rollback proof (non-trivial): canary persons/events gone, tenant count unchanged.
+    assert conn.execute("SELECT count(*) FROM tenants").fetchone()[0] == before_tenants
+    assert conn.execute("SELECT count(*) FROM persons").fetchone()[0] == before_persons
+    assert conn.execute(
+        "SELECT count(*) FROM tenants WHERE name LIKE 'canary-replay-%'"
+    ).fetchone()[0] == 0
+
+
+def test_detector_multi_version_history(dbConn):
+    """A→B→C history with detection after every import (continuous model):
+    job_change fires on the move, the later retitle is a promotion — never a
+    second job_change, never a missed move (gate rounds 1–2, both models)."""
+    from uuid import uuid4
+
+    from substrate.signals.detector import detect_for_tenant
+    from substrate.store import persist_contacts
+
+    conn = dbConn
+    tenant = f"mv-{uuid4().hex[:8]}"
+    tenant_id = _fresh_tenant(conn, tenant)
+
+    history = [
+        {"contact_id": "003mm", "email": "mia@alpha.com", "name_given": "Mia",
+         "name_family": "Chen", "title": "Engineer", "org_name": "Alpha"},
+        {"contact_id": "003mm", "email": "mia@alpha.com", "name_given": "Mia",
+         "name_family": "Chen", "title": "Platform Engineer", "org_name": "Beta"},  # move
+        {"contact_id": "003mm", "email": "mia@alpha.com", "name_given": "Mia",
+         "name_family": "Chen", "title": "Senior Platform Engineer",
+         "org_name": "Beta"},  # promotion
+    ]
+
+    # Continuous detection: one run after EACH import — exactly how production runs.
+    # Round-1's latest-pair-only fix swapped false alerts for silent misses; the
+    # consecutive-pair model must catch every step, never double-report any.
+    expected = [0, 1, 1]  # cumulative job_changes after each run
+    for i, rows in enumerate(history):
+        with conn.transaction():
+            persist_contacts(conn, tenant_id, rows, system="csv")
+        detect_for_tenant(conn, tenant_id)
+        cumulative = conn.execute(
+            "SELECT count(*) FROM events WHERE tenant_id = %s "
+            "AND event_type = 'job_change'",
+            (tenant_id,),
+        ).fetchone()[0]
+        assert cumulative == expected[i], f"run {i+1}: {cumulative} != {expected[i]}"
+
+    # The retitle after the move became a promotion (seniority up at same org),
+    # never a second job_change.
+    kinds = [r[0] for r in conn.execute(
+        "SELECT event_type FROM events WHERE tenant_id = %s ORDER BY detected_at", (tenant_id,)
+    ).fetchall()]
+    assert kinds == ["job_change", "promotion"]
+
+
+def test_at_least_once_failure_keeps_event_pending(dbConn):
+    """Sink failure → event stays pending (at-least-once), retried on next run."""
+    from uuid import uuid4
+
+    from substrate.signals.delivery import deliver_pending
+    from substrate.signals.detector import detect_for_tenant
+    from substrate.store import persist_contacts
+
+    conn = dbConn
+    tenant = f"fl-{uuid4().hex[:8]}"
+    tenant_id = _fresh_tenant(conn, tenant)
+    with conn.transaction():
+        persist_contacts(conn, tenant_id, [
+            {"contact_id": "1", "email": "a@x.com", "name_given": "A", "name_family": "B",
+             "title": "VP", "org_name": "Acme"},
+        ], system="csv")
+    with conn.transaction():
+        persist_contacts(conn, tenant_id, [
+            {"contact_id": "1", "email": "a@x.com", "name_given": "A", "name_family": "B",
+             "title": "CTO", "org_name": "Beta"},
+        ], system="csv")
+    detect_for_tenant(conn, tenant_id, first_run=False)
+
+    class FailingSink:
+        configured = True
+
+        def deliver(self, payload: dict) -> bool:
+            return False  # webhook down
+
+    # False-return branch: webhook down — event stays pending, retried next run.
+    delivery = deliver_pending(conn, tenant_id, FailingSink())  # type: ignore[arg-type]
+    assert delivery.failed == 1 and delivery.delivered == 0
+    assert "sink returned failure" in delivery.errors[0]
+    pending = conn.execute(
+        "SELECT count(*) FROM events WHERE tenant_id = %s AND delivered_at IS NULL",
+        (tenant_id,),
+    ).fetchone()[0]
+    assert pending == 1
+
+    # Raising branch: the report carries the exception TYPE, never the message
+    # (urllib errors can embed the webhook URL — a secret).
+
+    class RaisingSink:
+        configured = True
+
+        def deliver(self, payload: dict) -> bool:
+            raise RuntimeError("POST https://hooks.example/secret-token failed")
+
+    delivery2 = deliver_pending(conn, tenant_id, RaisingSink())  # type: ignore[arg-type]
+    assert delivery2.failed == 1
+    assert all(err.endswith(": RuntimeError") for err in delivery2.errors)
+    assert all("hooks.example" not in err for err in delivery2.errors)
+
+    pending = conn.execute(
+        "SELECT count(*) FROM events WHERE tenant_id = %s AND delivered_at IS NULL",
+        (tenant_id,),
+    ).fetchone()[0]
+    assert pending == 1  # still pending — retried on the next run
+
+    # Recovery run succeeds.
+    class WorkingSink:
+        configured = True
+
+        def deliver(self, payload: dict) -> bool:
+            return True
+
+    delivery2 = deliver_pending(conn, tenant_id, WorkingSink())  # type: ignore[arg-type]
+    assert delivery2.delivered == 1
+
+
+def test_first_run_records_without_alerting(dbConn):
+    """--first-run semantics: historical moves are RECORDED with delivered_at set —
+    no Slack flood from a tenant with re-import history."""
+    from uuid import uuid4
+
+    from substrate.signals.detector import detect_for_tenant
+    from substrate.store import persist_contacts
+
+    conn = dbConn
+    tenant = f"fr-{uuid4().hex[:8]}"
+    tenant_id = _fresh_tenant(conn, tenant)
+
+    # Two historical moves exist before the first detection run.
+    for rows in (
+        [{"contact_id": "1", "email": "a@x.com", "name_given": "A", "name_family": "B",
+          "title": "Engineer", "org_name": "Alpha"}],
+        [{"contact_id": "1", "email": "a@x.com", "name_given": "A", "name_family": "B",
+          "title": "Senior Engineer", "org_name": "Beta"}],
+        [{"contact_id": "1", "email": "a@x.com", "name_given": "A", "name_family": "B",
+          "title": "CTO", "org_name": "Gamma"}],
+    ):
+        with conn.transaction():
+            persist_contacts(conn, tenant_id, rows, system="csv")
+
+    # Forced first run (explicit --first-run → first_run=True): same suppression,
+    # even if a prior detect_runs row existed.
+    stats = detect_for_tenant(conn, tenant_id, first_run=True)
+    assert stats.events_written == 2  # both moves recorded
+
+    delivered = conn.execute(
+        "SELECT count(*) FROM events WHERE tenant_id = %s AND delivered_at IS NOT NULL",
+        (tenant_id,),
+    ).fetchone()[0]
+    assert delivered == 2  # recorded AND marked delivered — no Slack flood
+
+    pending = conn.execute(
+        "SELECT count(*) FROM events WHERE tenant_id = %s AND delivered_at IS NULL",
+        (tenant_id,),
+    ).fetchone()[0]
+    assert pending == 0
+
+
+def test_auto_first_run_real_move_still_alerts(dbConn):
+    """The gate r14 scenario: backlog suppressed on the first run, but the
+    tenant's first GENUINE move (a later run) alerts — never silently marked."""
+    from uuid import uuid4
+
+    from substrate.signals.detector import detect_for_tenant
+    from substrate.store import persist_contacts
+
+    conn = dbConn
+    tenant = f"af-{uuid4().hex[:8]}"
+    tenant_id = _fresh_tenant(conn, tenant)
+
+    # Backlog: two historical moves before detection ever runs.
+    for rows in (
+        [{"contact_id": "1", "email": "a@x.com", "name_given": "A", "name_family": "B",
+          "title": "Engineer", "org_name": "Alpha"}],
+        [{"contact_id": "1", "email": "a@x.com", "name_given": "A", "name_family": "B",
+          "title": "Senior Engineer", "org_name": "Beta"}],
+    ):
+        with conn.transaction():
+            persist_contacts(conn, tenant_id, rows, system="csv")
+
+    # Run 1 (auto first run, detector-level): backlog recorded as delivered.
+    stats1 = detect_for_tenant(conn, tenant_id)
+    assert stats1.events_written >= 1
+    assert conn.execute(
+        "SELECT count(*) FROM events WHERE tenant_id = %s AND delivered_at IS NULL",
+        (tenant_id,),
+    ).fetchone()[0] == 0
+
+    # A GENUINE move happens now (import 3), then run 2 — the move ALERTS.
+    with conn.transaction():
+        persist_contacts(conn, tenant_id, [
+            {"contact_id": "1", "email": "a@x.com", "name_given": "A", "name_family": "B",
+             "title": "CTO", "org_name": "Gamma"},
+        ], system="csv")
+    stats2 = detect_for_tenant(conn, tenant_id)
+    assert stats2.events_written >= 1
+
+    pending = conn.execute(
+        "SELECT count(*) FROM events WHERE tenant_id = %s AND delivered_at IS NULL",
+        (tenant_id,),
+    ).fetchone()[0]
+    assert pending >= 1  # the genuine move is PENDING — it will alert
+
+    # Run marker recorded: the auto decision is anchored to tenant history, not
+    # an inference from zero events (the r14 flaw this test guards).
+    marker = conn.execute(
+        "SELECT 1 FROM detect_runs WHERE tenant_id = %s", (tenant_id,)
+    ).fetchone()
+    assert marker is not None
+
+    def _pending() -> int:
+        return conn.execute(
+            "SELECT count(*) FROM events WHERE tenant_id = %s AND delivered_at IS NULL",
+            (tenant_id,),
+        ).fetchone()[0]
+
+    # Forced contract: first_run=True suppresses EVEN with prior runs (r17) —
+    # the NEW move from this run records pre-delivered. Assertions are run-scoped
+    # (delta), so older pending events can't make them pass trivially.
+    with conn.transaction():
+        persist_contacts(conn, tenant_id, [
+            {"contact_id": "1", "email": "a@x.com", "name_given": "A", "name_family": "B",
+             "title": "SVP Product", "org_name": "Omega"},
+        ], system="csv")
+    before = _pending()
+    forced = detect_for_tenant(conn, tenant_id, first_run=True)
+    assert forced.events_written >= 1  # the new move recorded
+    assert _pending() == before        # run-scoped: nothing NEW left pending
+
+    # first_run=False forces ALERTING: the same move re-detected... uses a new
+    # position, so instead assert False-mode leaves its events pending for
+    # delivery on a NEW move.
+    with conn.transaction():
+        persist_contacts(conn, tenant_id, [
+            {"contact_id": "1", "email": "a@x.com", "name_given": "A", "name_family": "B",
+             "title": "Chief Product Officer", "org_name": "Omega"},
+        ], system="csv")
+    before = _pending()
+    alerted = detect_for_tenant(conn, tenant_id, first_run=False)
+    assert alerted.events_written >= 1  # the new move detected
+    assert _pending() == before + 1     # explicit alerting: stays pending for delivery

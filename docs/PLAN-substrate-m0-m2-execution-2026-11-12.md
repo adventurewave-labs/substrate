@@ -30,6 +30,22 @@
 | LLM extraction | Provider-agnostic gateway, structured output, aggressive caching | Extraction only; never identity (PRD anti-drift rule) |
 | IaC | Terraform from day 1, staging = prod-shaped | Data company = infra hygiene is the product |
 
+> **Scorer deferral (2026-11-16, W7–8 lane):** LightGBM installs fine on py3.14
+> (4.7.0 verified), but the scorer trains on hand-labeled golden pairs which do
+> not exist until design-partner data lands. The detector ships on the v0 rule
+> set (deterministic); the eval harness's `decide_fn` is injectable, so the
+> scorer drops in the day real labels exist — training script becomes a W9
+> evidence-pack item. No behavioral change to the W7–8 acceptance criteria
+> beyond what the missing labels already implied.
+>
+> **Deploy note (W7–8 review):** the first `detect` on an existing tenant
+> MUST run with `--first-run` — migration 005 backfills seniority on closed
+> historical versions, and an un-flagged run would alert on every past move.
+>
+> **Classifier conservatism:** keyword banding misses multi-word patterns
+> (e.g. Engineering Manager → Senior Engineering Manager reads lateral).
+> Conservative-by-design; revisit with real design-partner titles (W9).
+
 > **Deviation (2026-11-15, W5–6 lane):** Dagster does not yet wheel for the dev
 > venv's Python 3.14, so the crawl pipeline ships as plain deterministic functions
 > with checkpoint reuse (`import_checkpoints`) and an injectable HTTP transport.

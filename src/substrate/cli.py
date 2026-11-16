@@ -197,6 +197,55 @@ def cmd_crawl(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_detect(args: argparse.Namespace) -> int:
+    import os
+
+    if args.detect_only and args.deliver_only:
+        raise SystemExit("--detect-only and --deliver-only are mutually exclusive")
+    if args.first_run and args.deliver_only:
+        raise SystemExit(
+            "--first-run with --deliver-only would deliver the backlog it was "
+            "supposed to suppress — run detect --first-run alone first"
+        )
+
+    from substrate.er.engine import tenant_id_by_name
+    from substrate.signals.delivery import SlackWebhookSink, deliver_pending
+    from substrate.signals.detector import detect_for_tenant
+
+    report: dict[str, object] = {}
+    conn = _connect(args)
+    try:
+        tenant_id = tenant_id_by_name(conn, args.tenant)
+        if not args.deliver_only:
+            # first_run=None → the detector's auto semantics (suppress the backlog
+            # on a tenant's first run, alert every later run).
+            first_run = True if args.first_run else None
+            stats = detect_for_tenant(conn, tenant_id, first_run=first_run)
+            report["detection"] = stats.as_dict()
+        if not args.detect_only:
+            sink = SlackWebhookSink(webhook_url=os.environ.get("SUBSTRATE_SLACK_WEBHOOK_URL"))
+            delivery = deliver_pending(conn, tenant_id, sink)
+            report["delivery"] = delivery.as_dict()
+    finally:
+        conn.close()
+    Path(args.report).write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
+    print(f"detect -> {args.report}")
+    return 0
+
+
+def cmd_canary(args: argparse.Namespace) -> int:
+    from substrate.signals.canary import replay
+
+    conn = _connect(args)  # canary replay owns its rolled-back tenant; --tenant unused
+    try:
+        result = replay(conn, Path(args.fixture))
+    finally:
+        conn.close()
+    Path(args.out).write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
+    print(f"canary replay -> {args.out}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="substrate", description="Substrate core CLI")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -265,6 +314,31 @@ def main(argv: list[str] | None = None) -> int:
     p_crawl.add_argument("--report", required=True, help="crawl report JSON path")
     p_crawl.add_argument("--dry-run", action="store_true", help="fetch + parse, write nothing")
     p_crawl.set_defaults(func=cmd_crawl)
+
+    p_detect = sub.add_parser("detect", help="detect job changes and deliver pending events")
+    with_db(p_detect)
+    p_detect.add_argument(
+        "--detect-only", action="store_true", help="diff snapshots, skip delivery"
+    )
+    p_detect.add_argument(
+        "--deliver-only", action="store_true", help="deliver pending, skip detection"
+    )
+    p_detect.add_argument(
+        "--first-run",
+        action="store_true",
+        help="record historical moves as already delivered (no Slack flood on "
+        "a tenant with re-import history)",
+    )
+    p_detect.add_argument("--report", required=True, help="detect/delivery report JSON path")
+    p_detect.set_defaults(func=cmd_detect)
+
+    p_canary = sub.add_parser("canary", help="replay known-move canaries (rolled back)")
+    p_canary.add_argument("--database-url", default=None, help="overrides SUBSTRATE_DATABASE_URL")
+    p_canary.add_argument(
+        "--fixture", default="tests/fixtures/canary_moves.json", help="canary fixture path"
+    )
+    p_canary.add_argument("--out", required=True, help="replay report JSON path")
+    p_canary.set_defaults(func=cmd_canary)
 
     args = parser.parse_args(argv)
     return int(args.func(args))
