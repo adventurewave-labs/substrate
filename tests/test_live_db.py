@@ -415,6 +415,7 @@ def test_cross_tenant_and_ambiguous_anchors(dbConn):
     ta = _fresh_tenant(conn, tenant_a)
     tb = _fresh_tenant(conn, tenant_b)
     org_a, _ = _org(conn, ta, "acme.com")
+    conn.commit()  # pin org_a before the FK-failure rollback below
 
     # Cross-tenant org reference: the composite FK must reject it.
     with pytest.raises(psycopg.errors.ForeignKeyViolation):
