@@ -721,7 +721,7 @@ def test_detector_multi_version_history(dbConn):
     expected = [0, 1, 1]  # cumulative job_changes after each run
     for i, rows in enumerate(history):
         with conn.transaction():
-            persist_contacts(conn, tenant_id, rows, system="csv")
+            persist_contacts(conn, tenant_id, [rows], system="csv")
         detect_for_tenant(conn, tenant_id)
         cumulative = conn.execute(
             "SELECT count(*) FROM events WHERE tenant_id = %s "
