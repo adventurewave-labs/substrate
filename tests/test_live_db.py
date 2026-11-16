@@ -13,6 +13,20 @@ import os
 import psycopg
 import pytest
 
+
+class RecordingSink:
+    """Module-level: configured, records payloads, delivers."""
+
+    configured = True
+
+    def __init__(self) -> None:
+        self.payloads: list[dict] = []
+
+    def deliver(self, payload: dict) -> bool:
+        self.payloads.append(payload)
+        return True
+
+
 pytestmark = pytest.mark.skipif(
     not os.environ.get("SUBSTRATE_TEST_DATABASE_URL"),
     reason="SUBSTRATE_TEST_DATABASE_URL not set — live DB path runs on the remote plane",
@@ -527,14 +541,6 @@ def test_detector_delivery_roundtrip(dbConn):
     from substrate.signals.detector import detect_for_tenant
     from substrate.store import persist_contacts
 
-    class RecordingSink:
-        def __init__(self) -> None:
-            self.payloads: list[dict] = []
-
-        def deliver(self, payload: dict) -> bool:
-            self.payloads.append(payload)
-            return True
-
     conn = dbConn
     tenant = f"dt-{uuid4().hex[:8]}"
     tenant_id = _fresh_tenant(conn, tenant)
@@ -606,14 +612,6 @@ def test_promotion_signal_roundtrip(dbConn):
     from substrate.signals.delivery import deliver_pending
     from substrate.signals.detector import detect_for_tenant
     from substrate.store import persist_contacts
-
-    class RecordingSink:
-        def __init__(self) -> None:
-            self.payloads: list[dict] = []
-
-        def deliver(self, payload: dict) -> bool:
-            self.payloads.append(payload)
-            return True
 
     conn = dbConn
     tenant = f"pr-{uuid4().hex[:8]}"
