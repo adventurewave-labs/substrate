@@ -1,8 +1,12 @@
 """Database access: connections and the SQL migration runner.
 
-Migration contract: numbered ``*.sql`` files in ``db/migrations``, applied in lexical
-order, each in its own transaction, recorded in ``schema_migrations``. SQL files must
-not carry their own BEGIN/COMMIT.
+Migration contract: numbered ``*.sql`` files shipped INSIDE the package
+(``substrate/migrations``), applied in lexical order, each in its own transaction,
+recorded in ``schema_migrations``. SQL files must not carry their own BEGIN/COMMIT.
+
+Package-relative resolution is deliberate: it is identical from a repo checkout and
+from an installed image — a deploy can never silently resolve a different (or
+missing) migrations directory than the one the code shipped with.
 """
 
 from __future__ import annotations
@@ -11,7 +15,7 @@ from pathlib import Path
 
 import psycopg
 
-MIGRATIONS_DIR = Path(__file__).resolve().parents[2] / "db" / "migrations"
+MIGRATIONS_DIR = Path(__file__).resolve().parent / "migrations"
 
 
 def connect(database_url: str) -> psycopg.Connection:
