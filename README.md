@@ -11,7 +11,7 @@ teams and their agents work.
 ![tests](https://img.shields.io/badge/tests-147%20passing%2C%2020%20skipped-2dd4bf)
 ![python](https://img.shields.io/badge/python-3.12%2B-blue)
 ![license](https://img.shields.io/badge/license-MIT-c9a227)
-![status](https://img.shields.io/badge/status-alpha%20%7C%20live%20on%20Railway-c9a227)
+![status](https://img.shields.io/badge/status-alpha%20%7C%20deployed%20on%20Railway-c9a227)
 
 > **Landing page:** https://adventurewave-labs.github.io/substrate/
 
@@ -29,7 +29,7 @@ teams and their agents work.
 - **Shipped:** resolve layer (deterministic ER v0 + golden-set harness), source layer
   (careers / SEC / press crawlers, LLM extraction gateway, Coresignal + PDL adapters),
   signals lane (job-change detector, bounded-retry delivery, canary replay), scheduler,
-  deploy pipeline — **live on Railway**, migrations 001–008 applied, live suite runnable
+  deploy pipeline — **deployed on Railway**, migrations 001–008 applied, live suite runnable
   on demand against a disposable Postgres (`scripts/live-verify.sh`, not wired into CI),
   canary detection recall **1.0**
 - **Honest gaps:** identity resolution is deterministic rules (the LightGBM scorer lands
