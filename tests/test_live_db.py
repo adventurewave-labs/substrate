@@ -933,3 +933,293 @@ def test_auto_first_run_real_move_still_alerts(dbConn):
     alerted = detect_for_tenant(conn, tenant_id, first_run=False)
     assert alerted.events_written >= 1  # the new move detected
     assert _pending() == before + 1     # explicit alerting: stays pending for delivery
+
+
+def test_multi_domain_same_org_no_cross_close(dbConn):
+    """Two watch domains, ONE shared org, same platform: postings merge into a
+    single snapshot — neither domain's reconcile closes the other's postings
+    (gate review, W9: per-domain batches flip-flopped cross-domain closes)."""
+    import json
+    from uuid import uuid4
+
+    from substrate.sources.crawl import crawl_careers_for_tenant
+    from substrate.sources.http import FetchResponse
+
+    conn = dbConn
+    tenant = f"md-{uuid4().hex[:8]}"
+    tenant_id = _fresh_tenant(conn, tenant)
+
+    # ONE org with both domains; two boards on the SAME platform (greenhouse).
+    conn.execute(
+        "INSERT INTO organizations (tenant_id, name_canonical, domains) "
+        "VALUES (%s, 'Acme Corp', %s)",
+        (tenant_id, ["acme.com", "acme.io"]),
+    )
+    conn.commit()
+    conn.execute("SELECT watch_upsert(%s, %s, %s, %s, %s, %s)",
+                 (tenant_id, "acme.com", "acme", None, None, None))
+    conn.execute("SELECT watch_upsert(%s, %s, %s, %s, %s, %s)",
+                 (tenant_id, "acme.io", "acmeio", None, None, None))
+    conn.commit()
+
+    gh_main = json.dumps({"jobs": [{"id": 1, "title": "Engineer",
+                                    "absolute_url": "https://boards.example/1",
+                                    "departments": [], "offices": []}]}).encode()
+    gh_io = json.dumps({"jobs": [{"id": 2, "title": "Seller",
+                                  "absolute_url": "https://boards.example/2",
+                                  "departments": [], "offices": []}]}).encode()
+
+    class FakeFetcher:
+        skipped_robots = 0
+
+        def fetch(self, url, headers=None):
+            if "/acme/" in url:
+                return FetchResponse(url=url, status=200, body=gh_main)
+            return FetchResponse(url=url, status=200, body=gh_io)
+
+    for _run in range(2):  # two runs must converge, never flip-flop
+        crawl_careers_for_tenant(conn, tenant_id, FakeFetcher())  # type: ignore[arg-type]
+        conn.commit()
+
+    open_rows = conn.execute(
+        "SELECT title_norm FROM job_postings WHERE tenant_id = %s AND closed_at IS NULL "
+        "ORDER BY title_norm",
+        (tenant_id,),
+    ).fetchall()
+    assert [r[0] for r in open_rows] == ["engineer", "seller"]  # both alive, stable
+
+    claim = conn.execute(
+        "SELECT value_norm FROM claims WHERE tenant_id = %s AND field = 'hiring_activity' "
+        "AND superseded_by IS NULL",
+        (tenant_id,),
+    ).fetchone()
+    assert claim is not None and claim[0] == "open_postings:2"
+
+    # Replay writes nothing new (replay-safety invariant).
+    stable = crawl_careers_for_tenant(conn, tenant_id, FakeFetcher())  # type: ignore[arg-type]
+    conn.commit()
+    assert stable.stats.postings_written == 0
+    assert stable.stats.claims_written == 0
+
+
+def test_partial_board_failure_suppresses_reconcile(dbConn):
+    """A failed board's merged batch is INCOMPLETE: its postings must survive
+    (no reconcile) while the successful board reconciles its own."""
+    from datetime import UTC, datetime
+    from uuid import uuid4
+
+    from substrate.sources.writer import (
+        WriteStats,
+        persist_postings,
+        write_hiring_activity_claim,
+    )
+
+    conn = dbConn
+    tenant = f"pf-{uuid4().hex[:8]}"
+    tenant_id = _fresh_tenant(conn, tenant)
+
+    org = conn.execute(
+        "INSERT INTO organizations (tenant_id, name_canonical, domains) "
+        "VALUES (%s, 'Acme Corp', %s) RETURNING id",
+        (tenant_id, ["acme.com", "acme.io"]),
+    ).fetchone()
+    org_id = org[0]
+    conn.commit()
+    now = datetime.now(UTC)
+
+    # Board 1 (succeeded earlier cycle): one live posting.
+    persist_postings(conn, tenant_id, org_id, [
+        {"title_norm": "Engineer", "function": "engineering",
+         "url": "https://boards.example/1", "posted_at": None},
+    ], source_type="greenhouse", retrieved_at=now, stats=WriteStats())
+    # Board 2 (failed this cycle): its posting is live from an earlier cycle.
+    persist_postings(conn, tenant_id, org_id, [
+        {"title_norm": "Seller", "function": "sales",
+         "url": "https://boards.example/2", "posted_at": None},
+    ], source_type="lever", retrieved_at=now, stats=WriteStats())
+
+    # This cycle: board 1 succeeded and lists ONLY its posting; board 2 FAILED.
+    merged = [{"title_norm": "Engineer", "function": "engineering",
+               "url": "https://boards.example/1", "posted_at": None}]
+    persist_postings(conn, tenant_id, org_id, merged, source_type="greenhouse",
+                     retrieved_at=now, stats=WriteStats(), reconcile=True)
+    # Board 2's batch incomplete → no reconcile for it.
+    persist_postings(conn, tenant_id, org_id, [], source_type="lever",
+                     retrieved_at=now, stats=WriteStats(), reconcile=False)
+    write_hiring_activity_claim(conn, tenant_id, org_id, stats=WriteStats())
+
+    # Seller posting survived the incomplete lever batch.
+    open_rows = conn.execute(
+        "SELECT title_norm FROM job_postings WHERE tenant_id = %s AND closed_at IS NULL "
+        "ORDER BY title_norm",
+        (tenant_id,),
+    ).fetchall()
+    assert [r[0] for r in open_rows] == ["engineer", "seller"]  # slugified
+
+
+def test_scheduler_partial_failure_protects_failed_board_postings(dbConn):
+    """Scheduler regression (W9 r2): two domains sharing one org+platform, one
+    board fails — the failed board's live postings must NOT be closed by the
+    successful board's reconcile."""
+    import json
+    from datetime import UTC, datetime
+    from uuid import uuid4
+
+    from substrate.scheduler import run_cycle_for_tenant
+    from substrate.sources.http import FetchFailed, FetchResponse
+
+    conn = dbConn
+    tenant = f"sc-{uuid4().hex[:8]}"
+    tenant_id = _fresh_tenant(conn, tenant)
+
+    # ONE org, both domains; two greenhouse boards.
+    org = conn.execute(
+        "INSERT INTO organizations (tenant_id, name_canonical, domains) "
+        "VALUES (%s, 'Shared Org', %s) RETURNING id",
+        (tenant_id, ["acme.com", "acme.io"]),
+    ).fetchone()
+    conn.execute("SELECT watch_upsert(%s, %s, %s, %s, %s, %s)",
+                 (tenant_id, "acme.com", "acme", None, None, None))
+    conn.execute("SELECT watch_upsert(%s, %s, %s, %s, %s, %s)",
+                 (tenant_id, "acme.io", "acmeio", None, None, None))
+    conn.commit()
+    org_id = org[0]
+
+    # Seed both postings from a "previous cycle".
+    now = datetime.now(UTC)
+    from substrate.sources.writer import WriteStats, persist_postings
+
+    stats = WriteStats()
+    persist_postings(conn, tenant_id, org_id, [
+        {"title_norm": "Engineer", "function": "engineering",
+         "url": "https://boards.example/eng", "posted_at": None},
+    ], source_type="greenhouse", retrieved_at=now, stats=stats)
+    persist_postings(conn, tenant_id, org_id, [
+        {"title_norm": "Seller", "function": "sales",
+         "url": "https://boards.example/sales", "posted_at": None},
+    ], source_type="greenhouse", retrieved_at=now, stats=stats)
+    conn.commit()
+
+    # This cycle: acme board succeeds (lists Engineer), acmeio board FAILS.
+    gh_ok = json.dumps({"jobs": [{"id": 1, "title": "Engineer",
+                                  "absolute_url": "https://boards.example/eng",
+                                  "departments": [], "offices": []}]}).encode()
+
+    class PartialFetcher:
+        skipped_robots = 0
+
+        def fetch(self, url, headers=None):
+            if "/acme/" in url:
+                return FetchResponse(url=url, status=200, body=gh_ok)
+            raise FetchFailed(url, None)
+
+    from substrate.er.engine import tenant_id_by_name
+    from substrate.scheduler import TenantCycleReport
+
+    real_tenant_id = tenant_id_by_name(conn, tenant)
+    report = TenantCycleReport(tenant=tenant)
+    run_cycle_for_tenant(conn, real_tenant_id, tenant, PartialFetcher(), report)
+    conn.commit()
+
+    assert report.careers_boards_failed == 1
+    # The failed board's live posting survives — no reconcile from an
+    # un-fetched board's snapshot.
+    open_titles = [r[0] for r in conn.execute(
+        "SELECT title_norm FROM job_postings WHERE tenant_id = %s AND closed_at IS NULL "
+        "ORDER BY title_norm",
+        (tenant_id,),
+    ).fetchall()]
+    assert open_titles == ["engineer", "seller"]  # slugified by the writer
+
+
+def test_scheduler_multi_domain_success_roundtrip(dbConn):
+    """Scheduler's own aggregation path (not crawl.py): two domains, one org,
+    same platform, both boards succeed → merged snapshot; replay creates nothing
+    new (gate round-11: successful aggregation lacked coverage)."""
+    import json
+    from datetime import UTC, datetime
+    from uuid import uuid4
+
+    from substrate.scheduler import TenantCycleReport, run_cycle_for_tenant
+    from substrate.sources.http import FetchResponse
+    from substrate.sources.writer import WriteStats
+
+    conn = dbConn
+    tenant = f"sg-{uuid4().hex[:8]}"
+    tenant_id = _fresh_tenant(conn, tenant)
+
+    # ONE org, both domains; two greenhouse boards, both succeed.
+    org = conn.execute(
+        "INSERT INTO organizations (tenant_id, name_canonical, domains) "
+        "VALUES (%s, 'Shared Org', %s) RETURNING id",
+        (tenant_id, ["acme.com", "acme.io"]),
+    ).fetchone()
+    conn.execute("SELECT watch_upsert(%s, %s, %s, %s, %s, %s)",
+                 (tenant_id, "acme.com", "acme", None, None, None))
+    conn.execute("SELECT watch_upsert(%s, %s, %s, %s, %s, %s)",
+                 (tenant_id, "acme.io", "acmeio", None, None, None))
+    conn.commit()
+    org_id = org[0]
+
+    gh_main = json.dumps({"jobs": [{"id": 1, "title": "Engineer",
+                                    "absolute_url": "https://boards.example/eng",
+                                    "departments": [], "offices": []}]}).encode()
+    gh_io = json.dumps({"jobs": [{"id": 2, "title": "Seller",
+                                  "absolute_url": "https://boards.example/sales",
+                                  "departments": [], "offices": []}]}).encode()
+
+    class FakeFetcher:
+        skipped_robots = 0
+
+        def fetch(self, url, headers=None):
+            if "/acme/" in url:
+                return FetchResponse(url=url, status=200, body=gh_main)
+            return FetchResponse(url=url, status=200, body=gh_io)
+
+    # Seed the org's prior snapshot: one OLD posting that the new boards no
+    # longer list — reconciliation (both boards complete) must close it.
+    from substrate.sources.writer import persist_postings
+
+    old_stats = WriteStats()
+    persist_postings(conn, tenant_id, org_id, [
+        {"title_norm": "Retired Role", "function": None,
+         "url": "https://boards.example/old", "posted_at": None},
+    ], source_type="greenhouse", retrieved_at=datetime.now(UTC), stats=old_stats)
+
+    # Run 1: both boards succeed → merged batch closes the retired posting,
+    # opens the two live ones, writes one aggregate hiring claim.
+    report = TenantCycleReport(tenant=tenant)
+    run_cycle_for_tenant(conn, tenant_id, tenant, FakeFetcher(), report)  # type: ignore[arg-type]
+    conn.commit()
+    assert report.postings_written == 2
+    assert report.careers_boards_failed == 0
+
+    open_titles = [r[0] for r in conn.execute(
+        "SELECT title_norm FROM job_postings WHERE tenant_id = %s "
+        "AND closed_at IS NULL ORDER BY title_norm",
+        (tenant_id,),
+    ).fetchall()]
+    assert open_titles == ["engineer", "seller"]
+
+    claim = conn.execute(
+        "SELECT value_norm FROM claims WHERE tenant_id = %s "
+        "AND field = 'hiring_activity' AND superseded_by IS NULL",
+        (tenant_id,),
+    ).fetchone()
+    assert claim[0] == "open_postings:2"
+
+    # Run 2 (replay): identical snapshots → nothing new written, and NO cycle
+    # failure (a swallowed error would zero the counters and still "pass").
+    report2 = TenantCycleReport(tenant=tenant)
+    run_cycle_for_tenant(conn, tenant_id, tenant, FakeFetcher(), report2)  # type: ignore[arg-type]
+    conn.commit()
+    assert report2.error is None  # gate r18: idempotency ≠ a swallowed failure
+    assert report2.postings_written == 0
+    assert report2.stats.claims_written == 0
+    assert report2.events_delivered == 0
+
+    final_open = conn.execute(
+        "SELECT count(*) FROM job_postings WHERE tenant_id = %s AND closed_at IS NULL",
+        (tenant_id,),
+    ).fetchone()[0]
+    assert final_open == 2

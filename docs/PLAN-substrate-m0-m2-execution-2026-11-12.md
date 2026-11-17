@@ -45,6 +45,12 @@
 > **Classifier conservatism:** keyword banding misses multi-word patterns
 > (e.g. Engineering Manager → Senior Engineering Manager reads lateral).
 > Conservative-by-design; revisit with real design-partner titles (W9).
+>
+> **W9 housekeeping (2026-11-16):** scheduler replaced the idle placeholder
+> (careers cycle → detect → deliver per tenant, error-isolated, SIGTERM-safe);
+> migrations ship as package data; live-verify documented at
+> `scripts/live-verify.sh`. Remaining W9 items are partner-data-dependent
+> (golden labels, TTR baseline, evidence pack).
 
 > **Deviation (2026-11-15, W5–6 lane):** Dagster does not yet wheel for the dev
 > venv's Python 3.14, so the crawl pipeline ships as plain deterministic functions

@@ -157,6 +157,7 @@ def persist_postings(
     source_type: str,
     retrieved_at: datetime,
     stats: WriteStats,
+    reconcile: bool = True,
 ) -> None:
     """Job postings: idempotent upsert keyed on (tenant, org, source, url).
 
@@ -164,7 +165,12 @@ def persist_postings(
     returns after a delisting is resurrected (closed_at cleared), and postings
     absent from the batch are closed — the hiring_activity snapshot is CURRENT,
     never a monotone maximum. The aggregate hiring claim is written separately
-    (write_hiring_activity_claim) once per org per crawl, across all platforms."""
+    (write_hiring_activity_claim) once per org per crawl, across all platforms.
+
+    ``reconcile=False`` (scheduler: a contributing board failed this cycle) skips
+    the close-pass — an absent URL from an un-fetched board must never close a
+    live posting (W9 gate review: incomplete batches are additive-only).
+    """
     incoming_urls = [posting["url"] for posting in postings]
     for posting in postings:
         title_norm = slugify(posting["title_norm"])
@@ -196,13 +202,14 @@ def persist_postings(
         if row is not None and row[0]:
             stats.postings_written += 1
 
-    # Reconciliation: postings from this source no longer listed are closed.
-    conn.execute(
-        "UPDATE job_postings SET closed_at = %s "
-        "WHERE tenant_id = %s AND org_id = %s AND source_type = %s "
-        "AND closed_at IS NULL AND NOT (url = ANY(%s))",
-        (retrieved_at, tenant_id, org_id, source_type, incoming_urls),
-    )
+    if reconcile:
+        # Reconciliation: postings from this source no longer listed are closed.
+        conn.execute(
+            "UPDATE job_postings SET closed_at = %s "
+            "WHERE tenant_id = %s AND org_id = %s AND source_type = %s "
+            "AND closed_at IS NULL AND NOT (url = ANY(%s))",
+            (retrieved_at, tenant_id, org_id, source_type, incoming_urls),
+        )
 
 
 def write_hiring_activity_claim(
