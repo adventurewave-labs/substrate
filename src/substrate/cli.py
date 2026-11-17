@@ -252,6 +252,18 @@ def cmd_scheduler(args: argparse.Namespace) -> int:
     if args.interval is not None and args.interval <= 0:
         raise SystemExit("--interval must be a positive number of seconds")
 
+    import os
+
+    from substrate.status_server import StatusServer
+
+    def serve_status(port: int) -> None:
+        def snapshot() -> dict[str, Any]:
+            snapshot = dict(live_state)
+            snapshot["service"] = "substrate-scheduler"
+            snapshot["interval_seconds"] = args.interval
+            return snapshot
+
+        StatusServer(port, snapshot).start()
 
     from substrate.scheduler import CycleReport, run_cycle_all, run_forever
     from substrate.sources.http import Fetcher
@@ -274,17 +286,21 @@ def cmd_scheduler(args: argparse.Namespace) -> int:
 
     interval = args.interval
     stop_requested = {"value": False}
+    live_state: dict[str, Any] = {"status": "starting", "cycles_started": 0}
 
     import signal
 
     def _handle_term(signum, frame):  # noqa: ANN001 — stdlib handler signature
         stop_requested["value"] = True
+        live_state["status"] = "stopping"
 
     signal.signal(signal.SIGTERM, _handle_term)
     signal.signal(signal.SIGINT, _handle_term)
 
     def stop() -> bool:
         return stop_requested["value"]
+
+    serve_status(int(os.environ.get("PORT", "8080")))
 
     log_path = args.log
     run_forever(
