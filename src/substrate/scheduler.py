@@ -236,17 +236,28 @@ def run_forever(
     stop: Callable[[], bool] | None = None,
     sleep: Callable[[float], None] = time.sleep,
     log: Callable[[str], None] = print,
+    state_out: dict[str, Any] | None = None,
 ) -> None:
     """Run the cycle on an interval until `stop()` returns True (checked between
     cycles — a SIGTERM handler flips the flag; the in-flight cycle completes)."""
     while stop is None or not stop():
         started = time.monotonic()
+        last_error: str | None = None
         try:
             report = cycle()
             message = f"cycle: {report.errors} errors across {report.tenants} tenants"
         except Exception as exc:  # noqa: BLE001 — the loop outlives any cycle
             report = CycleReport()
-            message = f"cycle FAILED: {type(exc).__name__}: {exc}"
+            last_error = f"{type(exc).__name__}: {exc}"
+            message = f"cycle FAILED: {last_error}"
+        if state_out is not None:
+            state_out.clear()
+            state_out.update({
+                "cycles_started": report.tenants,
+                "cycle_errors": report.errors,
+                "last_cycle_ok": last_error is None and report.errors == 0,
+                "last_error": last_error,
+            })
         _log_cycle_result(log, message)
         elapsed = time.monotonic() - started
         remaining = interval_seconds - elapsed
