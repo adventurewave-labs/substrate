@@ -252,6 +252,7 @@ def cmd_scheduler(args: argparse.Namespace) -> int:
     if args.interval is not None and args.interval <= 0:
         raise SystemExit("--interval must be a positive number of seconds")
 
+
     from substrate.scheduler import CycleReport, run_cycle_all, run_forever
     from substrate.sources.http import Fetcher
 
