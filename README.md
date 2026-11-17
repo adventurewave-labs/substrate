@@ -1,8 +1,20 @@
+<p align="center"><img src="assets/banner.svg" alt="Substrate — the living knowledge graph for go-to-market" width="100%"></p>
+
 # Substrate
 
-**The living knowledge graph for go-to-market.** Salesforce is the system of record. Clay is the system of action. Substrate is the system of truth — every company, person, job, and relationship edge, resolved with provenance and streamed as it changes.
+**The living knowledge graph for go-to-market.** Salesforce is the system of record.
+Clay is the system of action. Substrate is the system of truth: every company, person,
+job and signal — resolved, bitemporal, provenance-backed, streamed to wherever revenue
+teams and their agents work.
 
-> Venture monorepo: planning docs + core services. Postgres-only topology per PLAN §2 — no graph DB in v1.
+[![CI](https://github.com/adventurewave-labs/substrate/actions/workflows/ci.yml/badge.svg)](https://github.com/adventurewave-labs/substrate/actions/workflows/ci.yml)
+![tests](https://img.shields.io/badge/tests-145%20passing-2dd4bf)
+![python](https://img.shields.io/badge/python-3.12%2B-blue)
+![license](https://img.shields.io/badge/license-MIT-c9a227)
+![status](https://img.shields.io/badge/status-alpha%20%7C%20live%20on%20Railway-c9a227)
+
+> **Landing page:** https://adventurewave-labs.github.io/substrate/
+
 
 ## Documents
 
@@ -14,10 +26,16 @@
 
 ## Status
 
-- **M0 kickoff:** 2026-12-01 · gates land ~Feb / May / Sep / Dec 2027 (calendar slips before gates do)
-- **Current lane:** W3–4 — ER v0 (deterministic, precision-first), golden-set sampler/harness, Graph Audit v0 (PLAN §7)
-- **Current gate:** M2 — resolution ≥80% on 3 design-partner CRMs, merge precision ≥99.5%, zero privacy incidents
-- **Next artifact:** ~~design-partner outreach kit~~ shipped · next: code (M0–M2 build per PLAN §7), pitch deck deferred to M2 evidence
+- **Shipped:** resolve layer (deterministic ER v0 + golden-set harness), source layer
+  (careers / SEC / press crawlers, LLM extraction gateway, Coresignal + PDL adapters),
+  signals lane (job-change detector, bounded-retry delivery, canary replay), scheduler,
+  deploy pipeline — **live on Railway**, migrations 001–008 applied, **live suite 20/20**
+  against the production Postgres, canary detection recall **1.0**
+- **Honest gaps:** identity resolution is deterministic rules (the LightGBM scorer lands
+  once hand-labeled golden pairs exist — `decide_fn` is injectable), precision is not yet
+  measured on partner data, Graph Audit landing page and auth/API surface are not built
+- **Next:** M2 gate on real partner CRMs — resolution ≥80%, merge precision ≥99.5%,
+  alert→meeting stories (see the [outreach kit](docs/KIT-substrate-partner-outreach-2026-11-12.md))
 
 ## Dev setup
 
@@ -33,4 +51,8 @@ Layout: `src/substrate/` core services (config · db + migration runner · recon
 
 - Milestones are gated by measured acceptance, never calendar (see PRD §12).
 - Identity decisions are deterministic/learned ER — LLMs extract, never decide identity.
-- Raw plan files mirror to the rig workspace; this repo is canonical for the venture.
+- Every PR is reviewed by a second AI model family against [written invariants](AGENTS.md);
+  the signals lane went through 12 review rounds, which caught a version-ordering bug that
+  would have silently killed promotion detection.
+- No secrets in code: provider keys arrive via environment; error reports carry exception
+  types only, so webhook URLs can never leak into report files.

@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Substrate — the living knowledge graph for go-to-market</title>
+<meta name="description" content="Every company, person, job and signal in one resolved, provenance-backed graph. Deterministic identity, bitemporal history, bounded-retry delivery. Open-source alpha.">
+<style>
+:root{--bg:#04060c;--panel:#0a0f18;--line:#12202c;--teal:#2dd4bf;--gold:#c9a227;--ink:#dbe7ff;--muted:#7d93a8}
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:var(--bg);color:var(--ink);font-family:ui-sans-serif,-apple-system,"Segoe UI",Roboto,sans-serif;line-height:1.6}
+.wrap{max-width:960px;margin:0 auto;padding:0 24px}
+a{color:var(--teal);text-decoration:none}a:hover{text-decoration:underline}
+.hero{padding:72px 0 40px;text-align:center}
+.hero svg{width:100%;max-width:960px;height:auto;border-radius:14px;border:1px solid var(--line)}
+.hero h1{font-size:clamp(1.6rem,4vw,2.6rem);margin:36px 0 8px;letter-spacing:.04em}
+.hero h1 span{color:var(--gold)}
+.hero p.tag{color:var(--muted);font-size:1.05rem;max-width:640px;margin:0 auto}
+.badges{margin-top:20px}
+.badge{display:inline-block;border:1px solid var(--line);border-radius:999px;padding:4px 14px;margin:4px;font-size:.8rem;color:var(--muted)}
+.badge b{color:var(--ink);font-weight:600}
+section{padding:40px 0;border-top:1px solid var(--line)}
+h2{font-size:1.35rem;margin-bottom:14px;color:var(--teal)}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:16px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:18px 20px}
+.card h3{font-size:1rem;margin-bottom:8px;color:var(--ink)}
+.card p{color:var(--muted);font-size:.92rem}
+.card code{color:var(--teal);font-size:.85em}
+pre{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:18px 20px;overflow-x:auto;font-size:.85rem;line-height:1.5;color:#b8c9da}
+ol{margin-left:20px;color:var(--muted)}
+ol li{margin:6px 0}
+.rigor li{margin:10px 0}
+.note{border:1px solid var(--line);border-left:3px solid var(--gold);border-radius:8px;padding:14px 18px;color:var(--muted);font-size:.92rem;margin-top:18px}
+footer{border-top:1px solid var(--line);padding:28px 0;color:var(--muted);font-size:.85rem;text-align:center}
+@media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<div class="hero">
+<img src="banner.svg" alt="Substrate banner: a knowledge graph resolving as provenance flows along its edges" style="width:100%;max-width:960px;height:auto;border-radius:14px;border:1px solid var(--line)">
+<h1>Substrate<span>.</span></h1>
+<p class="tag">The living knowledge graph for go-to-market. Every company, person, job and
+signal — resolved, bitemporal, provenance-backed. Salesforce is the system of record.
+Clay is the system of action. This is the system of truth.</p>
+<div class="badges">
+<span class="badge"><b>alpha</b> — design-partner stage</span>
+<span class="badge"><b>145</b> tests · ruff · mypy</span>
+<span class="badge">deployed on <b>Railway</b></span>
+<span class="badge">live suite <b>20/20</b> on real Postgres</span>
+</div>
+<p style="margin-top:20px"><a href="https://github.com/adventurewave-labs/substrate" style="border:1px solid var(--teal);border-radius:10px;padding:10px 22px;display:inline-block">View the source ↗</a></p>
+</div>
+
+<section>
+<h2>What it actually does</h2>
+<div class="grid">
+<div class="card"><h3>Resolve</h3><p>Deterministic entity resolution over CRM imports: blocking, word-boundary
+seniority banding, constrained clustering. Two rapid imports of the same person produce one
+<b>contiguous</b> version chain — the bitemporal clock is read once per transition, so the chain never
+gaps or reverses.</p></div>
+<div class="card"><h3>Observe</h3><p>Careers boards, SEC filings, funding press and licensed feeds flow in as
+provenance-backed claims. The job-change detector diffs consecutive position versions — a move
+<b>and</b> a retitle landing between two runs both surface, and nothing double-reports.</p></div>
+<div class="card"><h3>Act</h3><p>Typed events with idempotency keys, bounded-retry delivery (attempts counter,
+retirement instead of queue stalls), per-tenant webhook destinations, mrkdwn-safe rendering. A tenant's
+backlog is recorded, never flooded.</p></div>
+</div>
+</section>
+
+<section>
+<h2>The pipeline, end to end</h2>
+<pre>CRM import (CSV / Salesforce / HubSpot)
+  └─ resolve ─── deterministic ER: blocking → pairwise rules → constrained clustering
+      │           identity is NEVER decided by an LLM
+      ├─ observe ─ careers boards · SEC Form D · funding press · licensed feeds
+      │            LLMs EXTRACT claims; identity decisions stay deterministic
+      ├─ detect ── consecutive-version snapshot diffing → typed events
+      │            job_change · promotion — idempotent, bounded-retry delivery
+      └─ act ───── per-tenant webhooks · Slack · Graph Audit reports</pre>
+<p style="color:var(--muted);font-size:.92rem;margin-top:10px">Every claim carries provenance:
+source, URL, retrieval time, extractor version, confidence. Every event is traceable to the
+positions that back it.</p>
+</section>
+
+<section>
+<h2>Engineering rigor</h2>
+<ul class="rigor" style="list-style:none">
+<li>▸ <b>Bitemporal by construction</b> — valid time and transaction time are separate columns; the
+version chain is read once per transition with a single <code>clock_timestamp()</code>, so it stays contiguous
+under rapid imports.</li>
+<li>▸ <b>Append-only claims</b> — a database trigger blocks updates except supersede chains and
+erasure mode; corrections are new claims, never rewrites.</li>
+<li>▸ <b>Cross-model review gate</b> — every PR was reviewed by a second AI model family against
+written invariants; the signals lane alone went through 12 review rounds, which caught a version-ordering
+bug that would have silently killed promotion detection (found on the first live run, fixed with a
+regression test).</li>
+<li>▸ <b>Live-verified</b> — 20-test roundtrip suite runs against the production Postgres on every
+release; canary replay measures detection recall (currently 1.0).</li>
+<li>▸ <b>No secrets in code</b> — provider keys arrive via environment; error reports carry exception
+types only, so webhook URLs can never leak into report files.</li>
+</ul>
+</section>
+
+<section>
+<h2>Run it</h2>
+<pre>$ git clone https://github.com/adventurewave-labs/substrate && cd substrate
+$ python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"
+$ .venv/bin/substrate import-csv --tenant demo --contacts-file crm-export.csv --report report.json
+$ .venv/bin/substrate detect --tenant demo --report detect.json     # job-change signals
+$ .venv/bin/substrate audit --tenant demo --out audit.json          # graph audit</pre>
+<p style="color:var(--muted);font-size:.92rem">CSV import works with zero infrastructure; add any
+PostgreSQL for persistence (schema: 8 numbered migrations).</p>
+</section>
+
+<section>
+<h2>Docs &amp; design</h2>
+<p>The full product and engineering record is in this repository:</p>
+<ol>
+<li><a href="PRD-living-gtm-graph-2026-11-12.md">PRD</a> — market evidence, wedge, architecture, competitive landscape</li>
+<li><a href="PLAN-substrate-m0-m2-execution-2026-11-12.md">Execution plan</a> — 9-week build, gates by measured acceptance, deviations documented</li>
+<li><a href="KIT-substrate-partner-outreach-2026-11-12.md">Partner outreach kit</a> — ICP, sequences, term sheet, onboarding checklist</li>
+</ol>
+<div class="note"><b>Honest status:</b> alpha. Identity resolution is deterministic rules (the learned
+scorer lands once hand-labeled golden pairs exist), precision is not yet measured on partner data, and
+no design partners have signed. Built as a showable, deployable core — not a finished product.</div>
+</section>
+
+<footer>Substrate · adventurewave-labs · MIT license · <a href="https://github.com/adventurewave-labs/substrate">source</a></footer>
+</div>
+</body>
+</html>
