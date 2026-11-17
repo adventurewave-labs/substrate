@@ -9,7 +9,13 @@ export default defineRailway(() => {
     build: { buildEnvironment: "V3", builder: "DOCKERFILE", dockerfilePath: "Dockerfile" },
     start: "sh -c 'substrate migrate && substrate scheduler --interval 3600'",
     replicas: { "us-west2": 1 },
-    env: { DATABASE_URL: preserve(), SUBSTRATE_SEC_CONTACT: preserve() },
+    env: {
+      DATABASE_URL: preserve(),
+      SUBSTRATE_DATABASE_URL: preserve(),
+      SUBSTRATE_TEST_DATABASE_URL: preserve(),
+      SUBSTRATE_SEC_CONTACT: preserve(),
+      PORT: preserve(),
+    },
   });
 
   return project("substrate", {
