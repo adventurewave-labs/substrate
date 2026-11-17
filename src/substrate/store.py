@@ -208,13 +208,26 @@ def upsert_position(
     ).fetchone()
     if current and current[1] == org_id and current[2] == title:
         return
+    # One clock read, bound to BOTH the close and the new version: the chain
+    # stays contiguous (old.txn_to == new.txn_from) and wall-clock ticks can no
+    # longer collide across versions (now() froze per transaction; found live
+    # on the plane — promotion detection silently died on rapid re-imports).
+    # The detector additionally orders versions by (txn_from, valid_start, id),
+    # so sub-tick or NTP-step collisions still resolve deterministically.
+    ts_row = conn.execute("SELECT clock_timestamp()").fetchone()
+    assert ts_row is not None
+    version_ts = ts_row[0]
+
     if current:
-        conn.execute("UPDATE positions SET txn_to = now() WHERE id = %s", (current[0],))
+        conn.execute(
+            "UPDATE positions SET txn_to = %s WHERE id = %s",
+            (version_ts, current[0]),
+        )
         stats.positions_closed += 1
     new_pos = conn.execute(
-        "INSERT INTO positions (tenant_id, person_id, org_id, title_norm, seniority) "
-        "VALUES (%s, %s, %s, %s, %s) RETURNING id",
-        (tenant_id, person_id, org_id, title, classify_seniority(title)),
+        "INSERT INTO positions (tenant_id, person_id, org_id, title_norm, seniority, "
+        "txn_from) VALUES (%s, %s, %s, %s, %s, %s) RETURNING id",
+        (tenant_id, person_id, org_id, title, classify_seniority(title), version_ts),
     ).fetchone()
     assert new_pos is not None
     position_id: UUID = new_pos[0]

@@ -1223,3 +1223,48 @@ def test_scheduler_multi_domain_success_roundtrip(dbConn):
         (tenant_id,),
     ).fetchone()[0]
     assert final_open == 2
+
+
+def test_version_chain_stays_contiguous(dbConn):
+    """Live regression for the plane bug: rapid upserts in one transaction must
+    produce a CONTIGUOUS version chain (old.txn_to == new.txn_from) with strictly
+    increasing txn_from — otherwise the detector's consecutive-pair window
+    reverses versions and promotion detection silently dies."""
+    from uuid import uuid4
+
+    from substrate.store import persist_contacts
+
+    conn = dbConn
+    tenant = f"vc-{uuid4().hex[:8]}"
+    tenant_id = _fresh_tenant(conn, tenant)
+
+    # BOTH upserts in ONE transaction: that is the plane scenario — now() is
+    # frozen per transaction, so on base both versions shared an identical
+    # txn_from and the chain lost its order. Single transaction = the regression
+    # this test guards actually fires.
+    with conn.transaction():
+        persist_contacts(conn, tenant_id, [
+            {"contact_id": "1", "email": "a@x.com", "name_given": "A", "name_family": "B",
+             "title": "Engineer", "org_name": "Acme"},
+        ], system="csv")
+        persist_contacts(conn, tenant_id, [
+            {"contact_id": "1", "email": "a@x.com", "name_given": "A", "name_family": "B",
+             "title": "Director of Engineering", "org_name": "Acme"},
+        ], system="csv")
+
+    rows = conn.execute(
+        "SELECT title_norm, txn_from, txn_to FROM positions "
+        "WHERE tenant_id = %s ORDER BY txn_from",
+        (tenant_id,),
+    ).fetchall()
+    assert len(rows) == 2
+    old_row, new_row = rows
+
+    # Contiguous chain: the old version closes exactly when the new one opens.
+    assert old_row[2] == new_row[1], "version chain gap: txn_to != next txn_from"
+
+    # Strictly increasing txn_from across the chain (no timestamp collisions).
+    assert old_row[1] < new_row[1]
+
+    # Write order preserved under ORDER BY txn_from (the detector's window).
+    assert old_row[0] == "Engineer" and new_row[0] == "Director of Engineering"
